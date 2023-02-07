@@ -28,8 +28,12 @@ logger:
 
 callbacks:
   model_checkpoint:
+    dirpath: ${paths.root_dir}/checkpoints
     monitor: "val/loss"
     mode: "min"
   early_stopping:
     monitor: "val/loss"
     mode: "min"
+
+train: true
+test: false
