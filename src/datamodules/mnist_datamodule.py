@@ -25,7 +25,6 @@ class MNISTDataset(Dataset):
 
     def __getitem__(self, index):
         image, label = self.dataset[index]
-        image = image * 2.0 - 1.0
         return {"image": image, "label": label}
 
 

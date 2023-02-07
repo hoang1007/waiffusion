@@ -9,6 +9,9 @@ from torchvision.utils import make_grid
 from pytorch_lightning import LightningModule
 from einops import rearrange, repeat
 
+from torchmetrics.image.fid import FrechetInceptionDistance
+from torchmetrics.image.inception import InceptionScore
+
 from src.models.unet import Unet
 from src.models.ema import EMA
 from .modules import (
@@ -48,6 +51,7 @@ class DDPM(LightningModule):
         l_simple_weight=1.0,
         conditioning_key=None,
         parameterization="eps",  # all assuming fixed variance schedules
+        validation_mode="forward",  # forward: validate noise prediction, backward: validate image generation or both
         scheduler_config=None,
         use_positional_encodings=False,
         learn_logvar=False,
@@ -102,6 +106,10 @@ class DDPM(LightningModule):
         )
 
         self.loss_type = loss_type
+        self.validation_mode = validation_mode
+        if self.validation_mode in ("backward", "both"):
+            self.inception_score = InceptionScore(normalize=True)
+            self.fid = FrechetInceptionDistance(feature=192, normalize=True)
 
         self.learn_logvar = learn_logvar
         self.logvar = torch.full(fill_value=logvar_init, size=(self.num_timesteps,))
@@ -429,6 +437,21 @@ class DDPM(LightningModule):
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
+        if self.validation_mode == "forward":
+            self._forward_validate(batch, batch_idx)
+        elif self.validation_mode == "backward":
+            self._backward_validate(batch, batch_idx)
+        elif self.validation_mode == "both":
+            self._forward_validate(batch, batch_idx)
+            self._backward_validate(batch, batch_idx)
+        else:
+            raise NotImplementedError(
+                f"Validation mode {self.validation_mode} not implemented"
+            )
+
+    @torch.no_grad()
+    def _forward_validate(self, batch, batch_idx):
+        """Validate the diffusion forward process"""
         _, loss_dict_no_ema = self.shared_step(batch)
         with self.ema_scope():
             _, loss_dict_ema = self.shared_step(batch)
@@ -439,6 +462,28 @@ class DDPM(LightningModule):
         self.log_dict(
             loss_dict_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True
         )
+
+    @torch.no_grad()
+    def _backward_validate(self, batch, batch_idx):
+        """Validate the diffusion backward process"""
+        imgs = self.get_input(batch, self.first_stage_key)
+        samples = self.sample(imgs.size(0))
+
+        self.fid.update(imgs, real=True)
+        self.fid.update(samples, real=False)
+
+        self.inception_score.update(samples)
+    
+    def validation_epoch_end(self, outputs):
+        if self.validation_mode in ("backward", "both"):
+            fid = self.fid.compute()
+            iscore_mean, iscore_std = self.inception_score.compute()
+
+            self.log_dict({
+                "fid": fid,
+                "inception_score_mean": iscore_mean,
+                "inception_score_std": iscore_std,
+            })
 
     def on_train_batch_end(self, *args, **kwargs):
         if self.use_ema:
