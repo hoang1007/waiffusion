@@ -20,7 +20,7 @@ from .modules import (
     extract_into_tensor,
     noise_like,
 )
-from src.utils.module_utils import exists, default
+from src.utils.module_utils import exists, default, load_ckpt
 
 
 class DDPM(LightningModule):
@@ -226,7 +226,7 @@ class DDPM(LightningModule):
                     print(f"{context}: Restored training weights")
 
     def init_from_ckpt(self, path, ignore_keys=list(), only_model=False):
-        sd = torch.load(path, map_location="cpu")
+        sd = load_ckpt(path, map_location="cpu")
         if "state_dict" in list(sd.keys()):
             sd = sd["state_dict"]
         keys = list(sd.keys())
@@ -371,7 +371,7 @@ class DDPM(LightningModule):
             target = x_start
         else:
             raise NotImplementedError(
-                f"Paramterization {self.parameterization} not yet supported"
+                f"Parameterization {self.parameterization} not yet supported"
             )
 
         loss = self.get_loss(model_out, target, mean=False).mean(dim=[1, 2, 3])
@@ -473,17 +473,19 @@ class DDPM(LightningModule):
         self.fid.update(samples, real=False)
 
         self.inception_score.update(samples)
-    
+
     def validation_epoch_end(self, outputs):
         if self.validation_mode in ("backward", "both"):
             fid = self.fid.compute()
             iscore_mean, iscore_std = self.inception_score.compute()
 
-            self.log_dict({
-                "fid": fid,
-                "inception_score_mean": iscore_mean,
-                "inception_score_std": iscore_std,
-            })
+            self.log_dict(
+                {
+                    "fid": fid,
+                    "inception_score_mean": iscore_mean,
+                    "inception_score_std": iscore_std,
+                }
+            )
 
     def on_train_batch_end(self, *args, **kwargs):
         if self.use_ema:

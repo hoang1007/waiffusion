@@ -2,6 +2,21 @@ import torch
 from inspect import isfunction
 
 
+def load_ckpt(path: str, *args, **kwargs):
+    """
+    Load a checkpoint from a path.
+    """
+    if path.startswith("https://drive.google.com"):
+        from gdown import download
+        from pathlib import Path
+
+        ckpt_path = Path(__file__).parent.parent.parent / "checkpoints"
+
+        path = download(path, quiet=False, fuzzy=True, output=ckpt_path)
+    ckpt = torch.load(path, *args, **kwargs)
+    return ckpt
+
+
 def zero_module(module: torch.nn.Module):
     """Zero the parameters of a module."""
 

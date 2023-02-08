@@ -14,14 +14,16 @@ class SinusoidalTimestepEmbedding(nn.Module):
         self.output_dim = output_dim
         self.max_period = max_period
         self.register_buffer("freqs", self._get_freqs())
-    
+
     def _get_freqs(self):
         from math import log
 
         half = self.output_dim // 2
 
         freqs = torch.exp(
-            -log(self.max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
+            -log(self.max_period)
+            * torch.arange(start=0, end=half, dtype=torch.float32)
+            / half
         ).unsqueeze_(0)
 
         return freqs
@@ -31,8 +33,10 @@ class SinusoidalTimestepEmbedding(nn.Module):
         embedding = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
 
         if self.output_dim % 2:
-            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
-        
+            embedding = torch.cat(
+                [embedding, torch.zeros_like(embedding[:, :1])], dim=-1
+            )
+
         return embedding
 
 
