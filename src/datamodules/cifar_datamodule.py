@@ -1,8 +1,9 @@
 from typing import Optional
-from torch.utils.data import Dataset, DataLoader
+
+from pytorch_lightning import LightningDataModule
+from torch.utils.data import DataLoader, Dataset
 from torchvision.datasets import CIFAR10
 from torchvision.transforms import transforms
-from pytorch_lightning import LightningDataModule
 
 
 class Cifar10Dataset(Dataset):

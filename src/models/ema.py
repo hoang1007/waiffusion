@@ -43,11 +43,9 @@ class EMA(nn.Module):
             if m_param[key].requires_grad:
                 sname = self.m_name2s_name[key]
                 shadow_params[sname] = shadow_params[sname].type_as(m_param[key])
-                shadow_params[sname].sub_(
-                    one_minus_decay * (shadow_params[sname] - m_param[key])
-                )
+                shadow_params[sname].sub_(one_minus_decay * (shadow_params[sname] - m_param[key]))
             else:
-                assert not key in self.m_name2s_name
+                assert key not in self.m_name2s_name
 
     def copy_to(self, model):
         m_param = dict(model.named_parameters())
@@ -56,11 +54,11 @@ class EMA(nn.Module):
             if m_param[key].requires_grad:
                 m_param[key].data.copy_(shadow_params[self.m_name2s_name[key]].data)
             else:
-                assert not key in self.m_name2s_name
+                assert key not in self.m_name2s_name
 
     def store(self, parameters):
-        """
-        Save the current parameters for restoring later.
+        """Save the current parameters for restoring later.
+
         Args:
           parameters: Iterable of `torch.nn.Parameter`; the parameters to be
             temporarily stored.
@@ -68,8 +66,8 @@ class EMA(nn.Module):
         self.collected_params = [param.clone() for param in parameters]
 
     def restore(self, parameters):
-        """
-        Restore the parameters stored with the `store` method.
+        """Restore the parameters stored with the `store` method.
+
         Useful to validate the model with EMA parameters without affecting the
         original optimization process. Store the parameters before the
         `copy_to` method. After validation (or model saving), use this to

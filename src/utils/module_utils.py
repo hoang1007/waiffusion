@@ -1,14 +1,14 @@
-import torch
 from inspect import isfunction
+
+import torch
 
 
 def load_ckpt(path: str, *args, **kwargs):
-    """
-    Load a checkpoint from a path.
-    """
+    """Load a checkpoint from a path."""
     if path.startswith("https://drive.google.com"):
-        from gdown import download
         from pathlib import Path
+
+        from gdown import download
 
         ckpt_path = Path(__file__).parent.parent.parent / "checkpoints"
 
@@ -27,18 +27,14 @@ def zero_module(module: torch.nn.Module):
 
 
 def scale_module(module: torch.nn.Module, scale: float):
-    """
-    Scale the parameters of a module and return it.
-    """
+    """Scale the parameters of a module and return it."""
     for p in module.parameters():
         p.detach().mul_(scale)
     return module
 
 
 def mean_flat(tensor: torch.Tensor):
-    """
-    Take the mean over all non-batch dimensions.
-    """
+    """Take the mean over all non-batch dimensions."""
     return tensor.mean(dim=tuple(range(1, len(tensor.shape))))
 
 

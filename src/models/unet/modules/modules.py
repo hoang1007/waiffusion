@@ -1,9 +1,10 @@
-from typing import Optional
 from abc import abstractmethod
+from typing import Optional
+
 import torch
 from torch import nn
 
-from src.models.common import Normalize, ConvND, Upsample, Downsample
+from src.models.common import ConvND, Downsample, Normalize, Upsample
 from src.utils.module_utils import zero_module
 
 
@@ -21,9 +22,7 @@ class SinusoidalTimestepEmbedding(nn.Module):
         half = self.output_dim // 2
 
         freqs = torch.exp(
-            -log(self.max_period)
-            * torch.arange(start=0, end=half, dtype=torch.float32)
-            / half
+            -log(self.max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
         ).unsqueeze_(0)
 
         return freqs
@@ -33,17 +32,13 @@ class SinusoidalTimestepEmbedding(nn.Module):
         embedding = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
 
         if self.output_dim % 2:
-            embedding = torch.cat(
-                [embedding, torch.zeros_like(embedding[:, :1])], dim=-1
-            )
+            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
 
         return embedding
 
 
 class TimestepBlock(nn.Module):
-    """
-    The module takes timestep embedding as a second argument.
-    """
+    """The module takes timestep embedding as a second argument."""
 
     @abstractmethod
     def forward(self, x: torch.Tensor, embedding: torch.Tensor):
@@ -56,9 +51,7 @@ def TimestepEmbedForwarder(
     embedding: torch.Tensor,
     context: Optional[torch.Tensor] = None,
 ):
-    """
-    An utility function to forward a module with extra timestep embedding argument.
-    """
+    """An utility function to forward a module with extra timestep embedding argument."""
     if isinstance(module, TimestepBlock):
         return module(x, embedding)
     else:
@@ -66,10 +59,8 @@ def TimestepEmbedForwarder(
 
 
 class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
-    """
-    A sequential module that passes timestep embeddings to the children that
-    support it as an extra input.
-    """
+    """A sequential module that passes timestep embeddings to the children that support it as an
+    extra input."""
 
     def forward(
         self,
@@ -92,8 +83,7 @@ class ResBlock(TimestepBlock):
         dim: int = 2,
         dropout: float = 0.0,
     ):
-        """
-        A residual block with a timestep embedding.
+        """A residual block with a timestep embedding.
 
         Args:
             :param channels: The number of channels in the input.
@@ -126,17 +116,13 @@ class ResBlock(TimestepBlock):
             Normalize(self.out_channels),
             nn.SiLU(inplace=True),
             nn.Dropout(dropout),
-            zero_module(
-                ConvND(dim, self.out_channels, self.out_channels, 3, padding=1)
-            ),
+            zero_module(ConvND(dim, self.out_channels, self.out_channels, 3, padding=1)),
         )
 
         if self.in_channels == self.out_channels:
             self.skip_connector = nn.Identity()
         elif use_conv:
-            self.skip_connector = ConvND(
-                dim, self.in_channels, self.out_channels, 3, padding=1
-            )
+            self.skip_connector = ConvND(dim, self.in_channels, self.out_channels, 3, padding=1)
         else:
             self.skip_connector = ConvND(dim, self.in_channels, self.out_channels, 1)
 

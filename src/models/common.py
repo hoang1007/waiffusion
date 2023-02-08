@@ -1,6 +1,6 @@
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 
 
 def Normalize(channels: int):
@@ -18,24 +18,16 @@ def ConvND(
     **kwargs,
 ):
     if dim == 1:
-        return nn.Conv1d(
-            in_channels, out_channels, kernel_size, stride, padding, *args, **kwargs
-        )
+        return nn.Conv1d(in_channels, out_channels, kernel_size, stride, padding, *args, **kwargs)
     elif dim == 2:
-        return nn.Conv2d(
-            in_channels, out_channels, kernel_size, stride, padding, *args, **kwargs
-        )
+        return nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, *args, **kwargs)
     elif dim == 3:
-        return nn.Conv3d(
-            in_channels, out_channels, kernel_size, stride, padding, *args, **kwargs
-        )
+        return nn.Conv3d(in_channels, out_channels, kernel_size, stride, padding, *args, **kwargs)
     else:
         raise NotImplementedError(f"ConvND is not implemented for dim={dim}")
 
 
-def AvgPoolND(
-    dim: int, kernel_size: int, stride: int = 1, padding: int = 0, *args, **kwargs
-):
+def AvgPoolND(dim: int, kernel_size: int, stride: int = 1, padding: int = 0, *args, **kwargs):
     if dim == 1:
         return nn.AvgPool1d(kernel_size, stride, padding, *args, **kwargs)
     elif dim == 2:
@@ -68,9 +60,7 @@ class Upsample(nn.Module):
 
     def forward(self, x: torch.Tensor):
         if self.dim == 3:
-            x = F.interpolate(
-                x, (x.size(2), x.size(3) * 2, x.size(4) * 2), mode="nearest"
-            )
+            x = F.interpolate(x, (x.size(2), x.size(3) * 2, x.size(4) * 2), mode="nearest")
         else:
             x = F.interpolate(x, scale_factor=2, mode="nearest")
 
@@ -99,9 +89,7 @@ class Downsample(nn.Module):
         self.dim = dim
 
         if self.use_conv:
-            self.op = ConvND(
-                dim, in_channels, out_channels, 3, stride=stride, padding=padding
-            )
+            self.op = ConvND(dim, in_channels, out_channels, 3, stride=stride, padding=padding)
         else:
             self.op = AvgPoolND(dim, kernel_size=stride, stride=stride)
 

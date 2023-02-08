@@ -1,26 +1,26 @@
-from functools import partial
 from contextlib import contextmanager
-from tqdm import tqdm
+from functools import partial
 
 import numpy as np
 import torch
-from torch import nn
-from torchvision.utils import make_grid
-from pytorch_lightning import LightningModule
 from einops import rearrange, repeat
-
+from pytorch_lightning import LightningModule
+from torch import nn
 from torchmetrics.image.fid import FrechetInceptionDistance
 from torchmetrics.image.inception import InceptionScore
+from torchvision.utils import make_grid
+from tqdm import tqdm
 
-from src.models.unet import Unet
 from src.models.ema import EMA
+from src.models.unet import Unet
+from src.utils.module_utils import default, exists, load_ckpt
+
 from .modules import (
     DiffusionWrapper,
-    make_beta_schedule,
     extract_into_tensor,
+    make_beta_schedule,
     noise_like,
 )
-from src.utils.module_utils import exists, default, load_ckpt
 
 
 class DDPM(LightningModule):
@@ -63,9 +63,7 @@ class DDPM(LightningModule):
             "x0",
         ], 'currently only supporting "eps" and "x0"'
         self.parameterization = parameterization
-        print(
-            f"{self.__class__.__name__}: Running in {self.parameterization}-prediction mode"
-        )
+        print(f"{self.__class__.__name__}: Running in {self.parameterization}-prediction mode")
         self.cond_stage_model = None
         self.clip_denoised = clip_denoised
         self.log_every_t = log_every_t
@@ -92,9 +90,7 @@ class DDPM(LightningModule):
         if monitor is not None:
             self.monitor = monitor
         if ckpt_path is not None:
-            self.init_from_ckpt(
-                ckpt_path, ignore_keys=ignore_keys, only_model=load_only_unet
-            )
+            self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys, only_model=load_only_unet)
 
         self.register_schedule(
             given_betas=given_betas,
@@ -161,17 +157,15 @@ class DDPM(LightningModule):
         self.register_buffer(
             "log_one_minus_alphas_cumprod", to_torch(np.log(1.0 - alphas_cumprod))
         )
-        self.register_buffer(
-            "sqrt_recip_alphas_cumprod", to_torch(np.sqrt(1.0 / alphas_cumprod))
-        )
+        self.register_buffer("sqrt_recip_alphas_cumprod", to_torch(np.sqrt(1.0 / alphas_cumprod)))
         self.register_buffer(
             "sqrt_recipm1_alphas_cumprod", to_torch(np.sqrt(1.0 / alphas_cumprod - 1))
         )
 
         # calculations for posterior q(x_{t-1} | x_t, x_0)
-        posterior_variance = (1 - self.v_posterior) * betas * (
-            1.0 - alphas_cumprod_prev
-        ) / (1.0 - alphas_cumprod) + self.v_posterior * betas
+        posterior_variance = (1 - self.v_posterior) * betas * (1.0 - alphas_cumprod_prev) / (
+            1.0 - alphas_cumprod
+        ) + self.v_posterior * betas
         # above: equal to 1. / (1. / (1. - alpha_cumprod_tm1) + alpha_t / beta_t)
         self.register_buffer("posterior_variance", to_torch(posterior_variance))
         # below: log calculation clipped because the posterior variance is 0 at the beginning of the diffusion chain
@@ -185,17 +179,12 @@ class DDPM(LightningModule):
         )
         self.register_buffer(
             "posterior_mean_coef2",
-            to_torch(
-                (1.0 - alphas_cumprod_prev) * np.sqrt(alphas) / (1.0 - alphas_cumprod)
-            ),
+            to_torch((1.0 - alphas_cumprod_prev) * np.sqrt(alphas) / (1.0 - alphas_cumprod)),
         )
 
         if self.parameterization == "eps":
             lvlb_weights = self.betas**2 / (
-                2
-                * self.posterior_variance
-                * to_torch(alphas)
-                * (1 - self.alphas_cumprod)
+                2 * self.posterior_variance * to_torch(alphas) * (1 - self.alphas_cumprod)
             )
         elif self.parameterization == "x0":
             lvlb_weights = (
@@ -233,7 +222,7 @@ class DDPM(LightningModule):
         for k in keys:
             for ik in ignore_keys:
                 if k.startswith(ik):
-                    print("Deleting key {} from state_dict.".format(k))
+                    print(f"Deleting key {k} from state_dict.")
                     del sd[k]
         missing, unexpected = (
             self.load_state_dict(sd, strict=False)
@@ -249,24 +238,21 @@ class DDPM(LightningModule):
             print(f"Unexpected Keys: {unexpected}")
 
     def q_mean_variance(self, x_start, t):
-        """
-        Get the distribution q(x_t | x_0).
+        """Get the distribution q(x_t | x_0).
+
         :param x_start: the [N x C x ...] tensor of noiseless inputs.
         :param t: the number of diffusion steps (minus 1). Here, 0 means one step.
         :return: A tuple (mean, variance, log_variance), all of x_start's shape.
         """
         mean = extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
         variance = extract_into_tensor(1.0 - self.alphas_cumprod, t, x_start.shape)
-        log_variance = extract_into_tensor(
-            self.log_one_minus_alphas_cumprod, t, x_start.shape
-        )
+        log_variance = extract_into_tensor(self.log_one_minus_alphas_cumprod, t, x_start.shape)
         return mean, variance, log_variance
 
     def predict_start_from_noise(self, x_t, t, noise):
         return (
             extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t
-            - extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape)
-            * noise
+            - extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape) * noise
         )
 
     def q_posterior(self, x_start, x_t, t):
@@ -340,8 +326,7 @@ class DDPM(LightningModule):
         noise = default(noise, lambda: torch.randn_like(x_start))
         return (
             extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
-            + extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape)
-            * noise
+            + extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
 
     def get_loss(self, pred, target, mean=True):
@@ -393,9 +378,7 @@ class DDPM(LightningModule):
     def forward(self, x, *args, **kwargs):
         # b, c, h, w, device, img_size, = *x.shape, x.device, self.image_size
         # assert h == img_size and w == img_size, f'height and width of image must be {img_size}'
-        t = torch.randint(
-            0, self.num_timesteps, (x.shape[0],), device=self.device
-        ).long()
+        t = torch.randint(0, self.num_timesteps, (x.shape[0],), device=self.device).long()
         return self.p_losses(x, t, *args, **kwargs)
 
     def get_input(self, batch, k):
@@ -414,9 +397,7 @@ class DDPM(LightningModule):
     def training_step(self, batch, batch_idx):
         loss, loss_dict = self.shared_step(batch)
 
-        self.log_dict(
-            loss_dict, prog_bar=True, logger=True, on_step=True, on_epoch=True
-        )
+        self.log_dict(loss_dict, prog_bar=True, logger=True, on_step=True, on_epoch=True)
 
         self.log(
             "global_step",
@@ -429,9 +410,7 @@ class DDPM(LightningModule):
 
         if self.use_scheduler:
             lr = self.optimizers().param_groups[0]["lr"]
-            self.log(
-                "lr_abs", lr, prog_bar=True, logger=True, on_step=True, on_epoch=False
-            )
+            self.log("lr_abs", lr, prog_bar=True, logger=True, on_step=True, on_epoch=False)
 
         return loss
 
@@ -445,27 +424,21 @@ class DDPM(LightningModule):
             self._forward_validate(batch, batch_idx)
             self._backward_validate(batch, batch_idx)
         else:
-            raise NotImplementedError(
-                f"Validation mode {self.validation_mode} not implemented"
-            )
+            raise NotImplementedError(f"Validation mode {self.validation_mode} not implemented")
 
     @torch.no_grad()
     def _forward_validate(self, batch, batch_idx):
-        """Validate the diffusion forward process"""
+        """Validate the diffusion forward process."""
         _, loss_dict_no_ema = self.shared_step(batch)
         with self.ema_scope():
             _, loss_dict_ema = self.shared_step(batch)
             loss_dict_ema = {key + "_ema": loss_dict_ema[key] for key in loss_dict_ema}
-        self.log_dict(
-            loss_dict_no_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True
-        )
-        self.log_dict(
-            loss_dict_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True
-        )
+        self.log_dict(loss_dict_no_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
+        self.log_dict(loss_dict_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
 
     @torch.no_grad()
     def _backward_validate(self, batch, batch_idx):
-        """Validate the diffusion backward process"""
+        """Validate the diffusion backward process."""
         imgs = self.get_input(batch, self.first_stage_key)
         samples = self.sample(imgs.size(0))
 
@@ -524,9 +497,7 @@ class DDPM(LightningModule):
         if sample:
             # get denoise row
             with self.ema_scope("Plotting"):
-                samples, denoise_row = self.sample(
-                    batch_size=N, return_intermediates=True
-                )
+                samples, denoise_row = self.sample(batch_size=N, return_intermediates=True)
 
             log["samples"] = samples
             log["denoise_row"] = self._get_rows_from_list(denoise_row)
