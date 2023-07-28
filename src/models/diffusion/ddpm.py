@@ -1,5 +1,4 @@
 from contextlib import contextmanager
-from functools import partial
 
 import numpy as np
 import torch
@@ -13,23 +12,19 @@ from tqdm import tqdm
 
 from src.models.ema import EMA
 from src.models.unet import Unet
-from src.utils.module_utils import default, exists, load_ckpt
+from src.utils.module_utils import default, load_ckpt
 
-from .modules import (
-    DiffusionWrapper,
-    extract_into_tensor,
-    make_beta_schedule,
-    noise_like,
-)
+from .modules import DiffusionWrapper
+from src.samplers import BaseSampler
 
 
 class DDPM(LightningModule):
     # classic DDPM with Gaussian diffusion, in image space
     def __init__(
         self,
-        unet: Unet,
-        timesteps=1000,
-        beta_schedule="linear",
+        model: Unet,
+        sampler: BaseSampler,
+        num_timesteps=1000,
         loss_type="l2",
         learning_rate=1e-5,
         ckpt_path=None,
@@ -41,17 +36,11 @@ class DDPM(LightningModule):
         image_size=256,
         channels=3,
         log_every_t=100,
-        clip_denoised=True,
-        linear_start=1e-4,
-        linear_end=2e-2,
-        cosine_s=8e-3,
-        given_betas=None,
         original_elbo_weight=0.0,
-        v_posterior=0.0,  # weight for choosing posterior variance as sigma = (1-v) * beta_tilde + v * beta
         l_simple_weight=1.0,
         conditioning_key=None,
         parameterization="eps",  # all assuming fixed variance schedules
-        validation_mode="forward",  # forward: validate noise prediction, backward: validate image generation or both
+        validation_mode="forward",  # forward: validate noise prediction, reverse: validate image generation or both
         scheduler_config=None,
         use_positional_encodings=False,
         learn_logvar=False,
@@ -65,14 +54,15 @@ class DDPM(LightningModule):
         self.parameterization = parameterization
         print(f"{self.__class__.__name__}: Running in {self.parameterization}-prediction mode")
         self.cond_stage_model = None
-        self.clip_denoised = clip_denoised
         self.log_every_t = log_every_t
         self.first_stage_key = first_stage_key
         self.learning_rate = learning_rate
         self.image_size = image_size  # try conv?
         self.channels = channels
+        self.num_timesteps = num_timesteps
         self.use_positional_encodings = use_positional_encodings
-        self.model = DiffusionWrapper(unet, conditioning_key)
+        self.model = DiffusionWrapper(model, conditioning_key)
+        self.sampler = sampler
 
         self.use_ema = use_ema
         if self.use_ema:
@@ -83,7 +73,6 @@ class DDPM(LightningModule):
         if self.use_scheduler:
             self.scheduler_config = scheduler_config
 
-        self.v_posterior = v_posterior
         self.original_elbo_weight = original_elbo_weight
         self.l_simple_weight = l_simple_weight
 
@@ -92,18 +81,9 @@ class DDPM(LightningModule):
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys, only_model=load_only_unet)
 
-        self.register_schedule(
-            given_betas=given_betas,
-            beta_schedule=beta_schedule,
-            timesteps=timesteps,
-            linear_start=linear_start,
-            linear_end=linear_end,
-            cosine_s=cosine_s,
-        )
-
         self.loss_type = loss_type
         self.validation_mode = validation_mode
-        if self.validation_mode in ("backward", "both"):
+        if self.validation_mode in ("reverse", "both"):
             self.inception_score = InceptionScore(normalize=True)
             self.fid = FrechetInceptionDistance(feature=192, normalize=True)
 
@@ -111,93 +91,6 @@ class DDPM(LightningModule):
         self.logvar = torch.full(fill_value=logvar_init, size=(self.num_timesteps,))
         if self.learn_logvar:
             self.logvar = nn.Parameter(self.logvar, requires_grad=True)
-
-    def register_schedule(
-        self,
-        given_betas=None,
-        beta_schedule="linear",
-        timesteps=1000,
-        linear_start=1e-4,
-        linear_end=2e-2,
-        cosine_s=8e-3,
-    ):
-        if exists(given_betas):
-            betas = given_betas
-        else:
-            betas = make_beta_schedule(
-                beta_schedule,
-                timesteps,
-                linear_start=linear_start,
-                linear_end=linear_end,
-                cosine_s=cosine_s,
-            )
-        alphas = 1.0 - betas
-        alphas_cumprod = np.cumprod(alphas, axis=0)
-        alphas_cumprod_prev = np.append(1.0, alphas_cumprod[:-1])
-
-        (timesteps,) = betas.shape
-        self.num_timesteps = int(timesteps)
-        self.linear_start = linear_start
-        self.linear_end = linear_end
-        assert (
-            alphas_cumprod.shape[0] == self.num_timesteps
-        ), "alphas have to be defined for each timestep"
-
-        to_torch = partial(torch.asarray, dtype=torch.float32)
-
-        self.register_buffer("betas", to_torch(betas))
-        self.register_buffer("alphas_cumprod", to_torch(alphas_cumprod))
-        self.register_buffer("alphas_cumprod_prev", to_torch(alphas_cumprod_prev))
-
-        # calculations for diffusion q(x_t | x_{t-1}) and others
-        self.register_buffer("sqrt_alphas_cumprod", to_torch(np.sqrt(alphas_cumprod)))
-        self.register_buffer(
-            "sqrt_one_minus_alphas_cumprod", to_torch(np.sqrt(1.0 - alphas_cumprod))
-        )
-        self.register_buffer(
-            "log_one_minus_alphas_cumprod", to_torch(np.log(1.0 - alphas_cumprod))
-        )
-        self.register_buffer("sqrt_recip_alphas_cumprod", to_torch(np.sqrt(1.0 / alphas_cumprod)))
-        self.register_buffer(
-            "sqrt_recipm1_alphas_cumprod", to_torch(np.sqrt(1.0 / alphas_cumprod - 1))
-        )
-
-        # calculations for posterior q(x_{t-1} | x_t, x_0)
-        posterior_variance = (1 - self.v_posterior) * betas * (1.0 - alphas_cumprod_prev) / (
-            1.0 - alphas_cumprod
-        ) + self.v_posterior * betas
-        # above: equal to 1. / (1. / (1. - alpha_cumprod_tm1) + alpha_t / beta_t)
-        self.register_buffer("posterior_variance", to_torch(posterior_variance))
-        # below: log calculation clipped because the posterior variance is 0 at the beginning of the diffusion chain
-        self.register_buffer(
-            "posterior_log_variance_clipped",
-            to_torch(np.log(np.maximum(posterior_variance, 1e-20))),
-        )
-        self.register_buffer(
-            "posterior_mean_coef1",
-            to_torch(betas * np.sqrt(alphas_cumprod_prev) / (1.0 - alphas_cumprod)),
-        )
-        self.register_buffer(
-            "posterior_mean_coef2",
-            to_torch((1.0 - alphas_cumprod_prev) * np.sqrt(alphas) / (1.0 - alphas_cumprod)),
-        )
-
-        if self.parameterization == "eps":
-            lvlb_weights = self.betas**2 / (
-                2 * self.posterior_variance * to_torch(alphas) * (1 - self.alphas_cumprod)
-            )
-        elif self.parameterization == "x0":
-            lvlb_weights = (
-                0.5
-                * np.sqrt(torch.Tensor(alphas_cumprod))
-                / (2.0 * 1 - torch.Tensor(alphas_cumprod))
-            )
-        else:
-            raise NotImplementedError("mu not supported")
-        # TODO how to choose this term
-        lvlb_weights[0] = lvlb_weights[1]
-        self.register_buffer("lvlb_weights", lvlb_weights, persistent=False)
-        assert not torch.isnan(self.lvlb_weights).all()
 
     @contextmanager
     def ema_scope(self, context=None):
@@ -237,97 +130,37 @@ class DDPM(LightningModule):
         if len(unexpected) > 0:
             print(f"Unexpected Keys: {unexpected}")
 
-    def q_mean_variance(self, x_start, t):
-        """Get the distribution q(x_t | x_0).
+    # def q_mean_variance(self, x_start, t):
+    #     """Get the distribution q(x_t | x_0).
 
-        :param x_start: the [N x C x ...] tensor of noiseless inputs.
-        :param t: the number of diffusion steps (minus 1). Here, 0 means one step.
-        :return: A tuple (mean, variance, log_variance), all of x_start's shape.
-        """
-        mean = extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
-        variance = extract_into_tensor(1.0 - self.alphas_cumprod, t, x_start.shape)
-        log_variance = extract_into_tensor(self.log_one_minus_alphas_cumprod, t, x_start.shape)
-        return mean, variance, log_variance
+    #     :param x_start: the [N x C x ...] tensor of noiseless inputs.
+    #     :param t: the number of diffusion steps (minus 1). Here, 0 means one step.
+    #     :return: A tuple (mean, variance, log_variance), all of x_start's shape.
+    #     """
+    #     mean = extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
+    #     variance = extract_into_tensor(1.0 - self.alphas_cumprod, t, x_start.shape)
+    #     log_variance = extract_into_tensor(self.log_one_minus_alphas_cumprod, t, x_start.shape)
+    #     return mean, variance, log_variance
 
-    def predict_start_from_noise(self, x_t, t, noise):
-        return (
-            extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t
-            - extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape) * noise
-        )
+    def sample(self, batch_size: int, shape: tuple, return_intermediates: bool = False):
+        imgs = torch.randn((batch_size, *shape), device=self.device)
+        intermediates = [imgs]
 
-    def q_posterior(self, x_start, x_t, t):
-        posterior_mean = (
-            extract_into_tensor(self.posterior_mean_coef1, t, x_t.shape) * x_start
-            + extract_into_tensor(self.posterior_mean_coef2, t, x_t.shape) * x_t
-        )
-        posterior_variance = extract_into_tensor(self.posterior_variance, t, x_t.shape)
-        posterior_log_variance_clipped = extract_into_tensor(
-            self.posterior_log_variance_clipped, t, x_t.shape
-        )
-        return posterior_mean, posterior_variance, posterior_log_variance_clipped
-
-    def p_mean_variance(self, x, t, clip_denoised: bool):
-        model_out = self.model(x, t)
-        if self.parameterization == "eps":
-            x_recon = self.predict_start_from_noise(x, t=t, noise=model_out)
-        elif self.parameterization == "x0":
-            x_recon = model_out
-        if clip_denoised:
-            x_recon.clamp_(-1.0, 1.0)
-
-        model_mean, posterior_variance, posterior_log_variance = self.q_posterior(
-            x_start=x_recon, x_t=x, t=t
-        )
-        return model_mean, posterior_variance, posterior_log_variance
-
-    @torch.no_grad()
-    def p_sample(self, x, t, clip_denoised=True, repeat_noise=False):
-        b, *_, device = *x.shape, x.device
-        model_mean, _, model_log_variance = self.p_mean_variance(
-            x=x, t=t, clip_denoised=clip_denoised
-        )
-        noise = noise_like(x.shape, device, repeat_noise)
-        # no noise when t == 0
-        nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
-        return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
-
-    @torch.no_grad()
-    def p_sample_loop(self, shape, return_intermediates=False):
-        device = self.betas.device
-        b = shape[0]
-        img = torch.randn(shape, device=device)
-        intermediates = [img]
         for i in tqdm(
-            reversed(range(0, self.num_timesteps)),
+            reversed(range(0, self.sampler.num_timesteps)),
             desc="Sampling t",
-            total=self.num_timesteps,
+            total=self.sampler.num_timesteps,
         ):
-            img = self.p_sample(
-                img,
-                torch.full((b,), i, device=device, dtype=torch.long),
-                clip_denoised=self.clip_denoised,
-            )
-            if i % self.log_every_t == 0 or i == self.num_timesteps - 1:
-                intermediates.append(img)
+            t = torch.full((batch_size,), i, device=self.device, dtype=torch.long)
+            model_output = self.model(imgs, t)
+            imgs = self.sampler.reverse_step(model_output, t, imgs)
+            
+            if i % self.log_every_t == 0 or i == self.sampler.num_timesteps - 1:
+                intermediates.append(imgs)
+
         if return_intermediates:
-            return img, intermediates
-        return img
-
-    @torch.no_grad()
-    def sample(self, batch_size=16, return_intermediates=False):
-        image_size = self.image_size
-        channels = self.channels
-        return self.p_sample_loop(
-            (batch_size, channels, image_size, image_size),
-            return_intermediates=return_intermediates,
-        )
-
-    def q_sample(self, x_start, t, noise=None):
-        noise = default(noise, lambda: torch.randn_like(x_start))
-        return (
-            extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
-            + extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
-        )
+            return imgs, intermediates
+        return imgs
 
     def get_loss(self, pred, target, mean=True):
         if self.loss_type == "l1":
@@ -346,7 +179,7 @@ class DDPM(LightningModule):
 
     def p_losses(self, x_start, t, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
-        x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
+        x_noisy = self.sampler.step(sample=x_start, t=t, noise=noise)
         model_out = self.model(x_noisy, t)
 
         loss_dict = {}
@@ -366,12 +199,15 @@ class DDPM(LightningModule):
         loss_dict.update({f"{log_prefix}/loss_simple": loss.mean()})
         loss_simple = loss.mean() * self.l_simple_weight
 
-        loss_vlb = (self.lvlb_weights[t] * loss).mean()
-        loss_dict.update({f"{log_prefix}/loss_vlb": loss_vlb})
+        # TODO: add loss vlb
+        loss = loss_simple
 
-        loss = loss_simple + self.original_elbo_weight * loss_vlb
+        # loss_vlb = (self.lvlb_weights[t] * loss).mean()
+        # loss_dict.update({f"{log_prefix}/loss_vlb": loss_vlb})
 
-        loss_dict.update({f"{log_prefix}/loss": loss})
+        # loss = loss_simple + self.original_elbo_weight * loss_vlb
+
+        # loss_dict.update({f"{log_prefix}/loss": loss})
 
         return loss, loss_dict
 
@@ -408,21 +244,17 @@ class DDPM(LightningModule):
             on_epoch=False,
         )
 
-        if self.use_scheduler:
-            lr = self.optimizers().param_groups[0]["lr"]
-            self.log("lr_abs", lr, prog_bar=True, logger=True, on_step=True, on_epoch=False)
-
         return loss
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
         if self.validation_mode == "forward":
             self._forward_validate(batch, batch_idx)
-        elif self.validation_mode == "backward":
-            self._backward_validate(batch, batch_idx)
+        elif self.validation_mode == "reverse":
+            self._reverse_validate(batch, batch_idx)
         elif self.validation_mode == "both":
             self._forward_validate(batch, batch_idx)
-            self._backward_validate(batch, batch_idx)
+            self._reverse_validate(batch, batch_idx)
         else:
             raise NotImplementedError(f"Validation mode {self.validation_mode} not implemented")
 
@@ -437,8 +269,8 @@ class DDPM(LightningModule):
         self.log_dict(loss_dict_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
 
     @torch.no_grad()
-    def _backward_validate(self, batch, batch_idx):
-        """Validate the diffusion backward process."""
+    def _reverse_validate(self, batch, batch_idx):
+        """Validate the diffusion reverse process."""
         imgs = self.get_input(batch, self.first_stage_key)
         samples = self.sample(imgs.size(0))
 
@@ -448,7 +280,7 @@ class DDPM(LightningModule):
         self.inception_score.update(samples)
 
     def validation_epoch_end(self, outputs):
-        if self.validation_mode in ("backward", "both"):
+        if self.validation_mode in ("reverse", "both"):
             fid = self.fid.compute()
             iscore_mean, iscore_std = self.inception_score.compute()
 
