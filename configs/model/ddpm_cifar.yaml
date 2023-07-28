@@ -1,7 +1,11 @@
 _target_: src.models.diffusion.DDPM
 # _partial_: True
 
-timesteps: 1000
+defaults:
+  - _self_
+  - sampler: ddpm.yaml
+
+num_timesteps: 1000
 image_size: 32
 channels: 3
 first_stage_key: image

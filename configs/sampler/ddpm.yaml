@@ -1,0 +1,11 @@
+_target_: src.samplers.DDPMSampler
+
+timesteps: 1000
+beta_scheduler: 'linear'
+linear_start: 1e-4
+linear_end: 2e-2
+cosine_s: 8e-3
+given_betas: null
+clip_denoised: True
+v_posterior: 0
+parameterization: 'eps'
