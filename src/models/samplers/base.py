@@ -6,6 +6,7 @@ class BaseSampler(torch.nn.Module):
         super().__init__()
         self.__num_train_timesteps = num_train_timesteps
         self.__num_inference_steps = None
+        self.timesteps = None
 
     @property
     def num_train_timesteps(self):
@@ -13,9 +14,7 @@ class BaseSampler(torch.nn.Module):
 
     @property
     def num_inference_timesteps(self):
-        assert (
-            self.__num_inference_steps is not None
-        ), "Number of inference steps is not set!"
+        assert self.__num_inference_steps is not None, "Number of inference steps is not set!"
         return self.__num_inference_steps
 
     def set_timesteps(self, num_timesteps: int):
@@ -26,11 +25,8 @@ class BaseSampler(torch.nn.Module):
         else:
             self.__num_inference_steps = num_timesteps
 
-    def step(
-        self, sample: torch.Tensor, t: torch.Tensor, noise: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Perform a single step of the diffusion process.
+    def step(self, sample: torch.Tensor, t: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
+        """Perform a single step of the diffusion process.
 
         Args:
             sample (torch.Tensor): Sample with noiseless (Input).
@@ -44,8 +40,7 @@ class BaseSampler(torch.nn.Module):
     def reverse_step(
         self, model_output: torch.Tensor, t: torch.Tensor, sample: torch.Tensor
     ) -> torch.Tensor:
-        """
-        Predict the sample at the previous timestep by reversing the SDE.
+        """Predict the sample at the previous timestep by reversing the SDE.
 
         Args:
             model_output (torch.Tensor): The output of the diffusion model.
