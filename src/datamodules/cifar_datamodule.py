@@ -7,6 +7,18 @@ from torchvision.transforms import transforms
 
 
 class Cifar10Dataset(Dataset):
+    CLASSES = [
+        "airplane",
+        "automobile",
+        "bird",
+        "cat",
+        "deer",
+        "dog",
+        "frog",
+        "horse",
+        "ship",
+        "truck"
+    ]
     def __init__(self, train: bool, data_dir: str = "data") -> None:
         super().__init__()
 
@@ -14,13 +26,15 @@ class Cifar10Dataset(Dataset):
             data_dir, train=train, download=True, transform=transforms.ToTensor()
         )
 
+        self.label2class = {label: i for i, label in enumerate(self.CLASSES)}
+
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, index):
         image, label = self.dataset[index]
-
-        return {"image": image, "label": label}
+        image = image * 2 - 1  # normalize to [-1, 1]
+        return {"image": image, "label": label, "class": self.label2class[label]}
 
 
 class Cifar10DataModule(LightningDataModule):
