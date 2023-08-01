@@ -60,7 +60,7 @@ class DDPMSampler(BaseSampler):
                 cosine_s=cosine_s,
             )
         alphas = 1.0 - betas
-        alphas_cumprod = torch.cumprod(alphas, axis=0)
+        alphas_cumprod = torch.cumprod(alphas, dim=0)
         # alphas_cumprod_prev = torch.append(1.0, alphas_cumprod[:-1])
         alphas_cumprod_prev = torch.cat((1.0, alphas_cumprod[:-1]))
 
@@ -139,6 +139,9 @@ class DDPMSampler(BaseSampler):
         # lvlb_weights[0] = lvlb_weights[1]
         # self.register_buffer("lvlb_weights", lvlb_weights, persistent=False)
         # assert not torch.isnan(self.lvlb_weights).all()
+
+    def __get_variance(self, t, predicted_variance=None, variance_type=None):
+        
 
     def __predict_start_from_noise(self, x_t, t, noise):
         return (
