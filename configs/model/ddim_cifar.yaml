@@ -2,7 +2,7 @@ _target_: src.models.diffusion.DDPM
 # _partial_: True
 
 defaults:
-  - sampler: ddpm.yaml
+  - sampler: ddim.yaml
   - _self_
 
 num_train_timesteps: 1000
@@ -13,6 +13,7 @@ conditional_stage_key: class
 
 sampler:
   beta_schedule: linear
+  num_inference_timesteps: 50
 
 model:
   _target_: src.models.unet.Unet

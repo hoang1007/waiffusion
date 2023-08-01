@@ -26,15 +26,13 @@ class Cifar10Dataset(Dataset):
             data_dir, train=train, download=True, transform=transforms.ToTensor()
         )
 
-        self.label2class = {label: i for i, label in enumerate(self.CLASSES)}
-
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, index):
-        image, label = self.dataset[index]
+        image, label_idx = self.dataset[index]
         image = image * 2 - 1  # normalize to [-1, 1]
-        return {"image": image, "label": label, "class": self.label2class[label]}
+        return {"image": image, "label": Cifar10Dataset.CLASSES[label_idx], "class": label_idx}
 
 
 class Cifar10DataModule(LightningDataModule):
