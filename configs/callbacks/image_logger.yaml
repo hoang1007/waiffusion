@@ -1,0 +1,5 @@
+image_logger:
+  _target_: src.callbacks.ImageLogger
+  frequency: 1 # frequency of logging images in batches
+  logging_interval: 'epoch' # 'step' or 'epoch. Note: step only support for log during training
+  max_images: 16 # maximum number of images to log

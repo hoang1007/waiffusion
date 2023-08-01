@@ -9,30 +9,26 @@ defaults:
 # all parameters below will be merged with parameters from default configurations set above
 # this allows you to overwrite only specified parameters
 
-tags: ["mnist", "ddpm"]
+tags: ["cifar10", "ddpm"]
 
 seed: 188
 
 trainer:
-  min_epochs: 1
-  max_epochs: 15
+  max_epochs: 2000
 
 datamodule:
   batch_size: 128
 
 logger:
   wandb:
-    project: "waiffusion"
+    name: ${now:%Y-%m-%d}_${now:%H-%M-%S}
     tags: ${tags}
     group: "ddpm"
 
 callbacks:
   model_checkpoint:
     dirpath: ${paths.root_dir}/checkpoints
-    monitor: "val/loss"
-    mode: "min"
-  early_stopping:
-    monitor: "val/loss"
+    monitor: "val/loss_simple"
     mode: "min"
 
 train: true

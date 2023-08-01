@@ -3,7 +3,6 @@
 # specify here default configuration
 # order of defaults determines the order in which configs override each other
 defaults:
-  - _self_
   - datamodule: mnist.yaml
   - model: ddpm_mnist.yaml
   - callbacks: default.yaml
@@ -12,6 +11,7 @@ defaults:
   - paths: default.yaml
   - extras: default.yaml
   - hydra: default.yaml
+  - _self_
 
   # experiment configs allow for version control of specific hyperparameters
   # e.g. best hyperparameters for given model and datamodule
