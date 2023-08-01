@@ -1,9 +1,10 @@
 from contextlib import contextmanager
+from functools import partial
+from typing import Dict, Optional, List
 
 import numpy as np
 import torch
 from einops import rearrange, repeat
-from pytorch_lightning import LightningModule
 from torch import nn
 from torchmetrics.image.fid import FrechetInceptionDistance
 from torchmetrics.image.inception import InceptionScore
@@ -12,41 +13,37 @@ from tqdm import tqdm
 
 from src.models.ema import EMA
 from src.models.unet import Unet
+from src.models.samplers import BaseSampler
 from src.utils.module_utils import default, load_ckpt
 
-from .modules import DiffusionWrapper
-from src.samplers import BaseSampler
+from .base import BaseModel
 
 
-class DDPM(LightningModule):
+class DDPM(BaseModel):
     # classic DDPM with Gaussian diffusion, in image space
     def __init__(
         self,
         model: Unet,
         sampler: BaseSampler,
-        num_timesteps=1000,
+        optimizer: Optional[partial] = None,
+        scheduler_config: Optional[Dict] = None,
+        num_train_timesteps=1000,
         loss_type="l2",
-        learning_rate=1e-5,
         ckpt_path=None,
         ignore_keys=[],
         load_only_unet=False,
-        monitor="val/loss",
         use_ema=True,
         first_stage_key="image",
+        conditional_stage_key="class",
         image_size=256,
         channels=3,
         log_every_t=100,
-        original_elbo_weight=0.0,
-        l_simple_weight=1.0,
-        conditioning_key=None,
         parameterization="eps",  # all assuming fixed variance schedules
         validation_mode="forward",  # forward: validate noise prediction, reverse: validate image generation or both
-        scheduler_config=None,
-        use_positional_encodings=False,
         learn_logvar=False,
         logvar_init=0.0,
     ):
-        super().__init__()
+        super().__init__(optimizer, scheduler_config)
         assert parameterization in [
             "eps",
             "x0",
@@ -56,12 +53,11 @@ class DDPM(LightningModule):
         self.cond_stage_model = None
         self.log_every_t = log_every_t
         self.first_stage_key = first_stage_key
-        self.learning_rate = learning_rate
+        self.conditional_stage_key = conditional_stage_key
         self.image_size = image_size  # try conv?
         self.channels = channels
-        self.num_timesteps = num_timesteps
-        self.use_positional_encodings = use_positional_encodings
-        self.model = DiffusionWrapper(model, conditioning_key)
+        self.num_train_timesteps = num_train_timesteps
+        self.model = model
         self.sampler = sampler
 
         self.use_ema = use_ema
@@ -69,15 +65,6 @@ class DDPM(LightningModule):
             self.model_ema = EMA(self.model)
             print(f"Keeping EMAs of {len(list(self.model_ema.buffers()))}.")
 
-        self.use_scheduler = scheduler_config is not None
-        if self.use_scheduler:
-            self.scheduler_config = scheduler_config
-
-        self.original_elbo_weight = original_elbo_weight
-        self.l_simple_weight = l_simple_weight
-
-        if monitor is not None:
-            self.monitor = monitor
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys, only_model=load_only_unet)
 
@@ -88,7 +75,7 @@ class DDPM(LightningModule):
             self.fid = FrechetInceptionDistance(feature=192, normalize=True)
 
         self.learn_logvar = learn_logvar
-        self.logvar = torch.full(fill_value=logvar_init, size=(self.num_timesteps,))
+        self.logvar = torch.full(fill_value=logvar_init, size=(self.num_train_timesteps,))
         if self.learn_logvar:
             self.logvar = nn.Parameter(self.logvar, requires_grad=True)
 
@@ -130,32 +117,24 @@ class DDPM(LightningModule):
         if len(unexpected) > 0:
             print(f"Unexpected Keys: {unexpected}")
 
-    # def q_mean_variance(self, x_start, t):
-    #     """Get the distribution q(x_t | x_0).
+    @torch.no_grad()
+    def sample(self, batch_size: int, classes: Optional[List[int]] = None, return_intermediates: bool = False):
+        if classes is not None:
+            assert len(classes) == batch_size, "Number of classes must match batch size"
+            class_labels = torch.tensor(classes, device=self.device).long()
 
-    #     :param x_start: the [N x C x ...] tensor of noiseless inputs.
-    #     :param t: the number of diffusion steps (minus 1). Here, 0 means one step.
-    #     :return: A tuple (mean, variance, log_variance), all of x_start's shape.
-    #     """
-    #     mean = extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
-    #     variance = extract_into_tensor(1.0 - self.alphas_cumprod, t, x_start.shape)
-    #     log_variance = extract_into_tensor(self.log_one_minus_alphas_cumprod, t, x_start.shape)
-    #     return mean, variance, log_variance
-
-    def sample(self, batch_size: int, shape: tuple, return_intermediates: bool = False):
-        imgs = torch.randn((batch_size, *shape), device=self.device)
+        imgs = torch.randn(
+            (batch_size, self.channels, self.image_size, self.image_size),
+            device=self.device,
+        )
         intermediates = [imgs]
 
-        for i in tqdm(
-            reversed(range(0, self.sampler.num_timesteps)),
-            desc="Sampling t",
-            total=self.sampler.num_timesteps,
-        ):
-            t = torch.full((batch_size,), i, device=self.device, dtype=torch.long)
-            model_output = self.model(imgs, t)
+        for i, t in enumerate(tqdm(self.sampler.timesteps, desc="Sampling t")):
+            t = torch.full((batch_size,), t, device=self.device, dtype=torch.long)
+            model_output = self.model(imgs, t, class_labels=class_labels)
             imgs = self.sampler.reverse_step(model_output, t, imgs)
-            
-            if i % self.log_every_t == 0 or i == self.sampler.num_timesteps - 1:
+
+            if i % self.log_every_t == 0 or i == len(self.sampler.timesteps) - 1:
                 intermediates.append(imgs)
 
         if return_intermediates:
@@ -177,45 +156,30 @@ class DDPM(LightningModule):
 
         return loss
 
-    def p_losses(self, x_start, t, noise=None):
-        noise = default(noise, lambda: torch.randn_like(x_start))
-        x_noisy = self.sampler.step(sample=x_start, t=t, noise=noise)
-        model_out = self.model(x_noisy, t)
+    def forward(self, x, class_labels=None, context=None):
+        # b, c, h, w, device, img_size, = *x.shape, x.device, self.image_size
+        # assert h == img_size and w == img_size, f'height and width of image must be {img_size}'
+        t = torch.randint(0, self.num_train_timesteps, (x.shape[0],), device=self.device).long()
+        noise = torch.randn_like(x)
+        x_noisy = self.sampler.step(sample=x, t=t, noise=noise)
+        model_out = self.model(x_noisy, t, class_labels=class_labels, context=context)
 
         loss_dict = {}
         if self.parameterization == "eps":
             target = noise
         elif self.parameterization == "x0":
-            target = x_start
+            target = x
         else:
             raise NotImplementedError(
                 f"Parameterization {self.parameterization} not yet supported"
             )
 
-        loss = self.get_loss(model_out, target, mean=False).mean(dim=[1, 2, 3])
-
+        loss = self.get_loss(model_out, target)
         log_prefix = "train" if self.training else "val"
 
-        loss_dict.update({f"{log_prefix}/loss_simple": loss.mean()})
-        loss_simple = loss.mean() * self.l_simple_weight
-
-        # TODO: add loss vlb
-        loss = loss_simple
-
-        # loss_vlb = (self.lvlb_weights[t] * loss).mean()
-        # loss_dict.update({f"{log_prefix}/loss_vlb": loss_vlb})
-
-        # loss = loss_simple + self.original_elbo_weight * loss_vlb
-
-        # loss_dict.update({f"{log_prefix}/loss": loss})
-
+        loss_dict.update({f"{log_prefix}/loss": loss.item()})
+        
         return loss, loss_dict
-
-    def forward(self, x, *args, **kwargs):
-        # b, c, h, w, device, img_size, = *x.shape, x.device, self.image_size
-        # assert h == img_size and w == img_size, f'height and width of image must be {img_size}'
-        t = torch.randint(0, self.num_timesteps, (x.shape[0],), device=self.device).long()
-        return self.p_losses(x, t, *args, **kwargs)
 
     def get_input(self, batch, k):
         x = batch[k]
@@ -227,7 +191,8 @@ class DDPM(LightningModule):
 
     def shared_step(self, batch):
         x = self.get_input(batch, self.first_stage_key)
-        loss, loss_dict = self(x)
+        class_labels = batch.get(self.conditional_stage_key, None)
+        loss, loss_dict = self(x, class_labels=class_labels)
         return loss, loss_dict
 
     def training_step(self, batch, batch_idx):
@@ -279,7 +244,7 @@ class DDPM(LightningModule):
 
         self.inception_score.update(samples)
 
-    def validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self):
         if self.validation_mode in ("reverse", "both"):
             fid = self.fid.compute()
             iscore_mean, iscore_std = self.inception_score.compute()
@@ -296,7 +261,7 @@ class DDPM(LightningModule):
         if self.use_ema:
             self.model_ema(self.model)
 
-    def _get_rows_from_list(self, samples):
+    def __get_rows_from_list(self, samples):
         n_imgs_per_row = len(samples)
         denoise_grid = rearrange(samples, "n b c h w -> b n c h w")
         denoise_grid = rearrange(denoise_grid, "b n c h w -> (b n) c h w")
@@ -307,6 +272,7 @@ class DDPM(LightningModule):
     def log_images(self, batch, N=8, n_row=2, sample=True, return_keys=None, **kwargs):
         log = dict()
         x = self.get_input(batch, self.first_stage_key)
+        class_labels = batch.get(self.conditional_stage_key, None)
         N = min(x.shape[0], N)
         n_row = min(x.shape[0], n_row)
         x = x.to(self.device)[:N]
@@ -316,23 +282,23 @@ class DDPM(LightningModule):
         diffusion_row = list()
         x_start = x[:n_row]
 
-        for t in range(self.num_timesteps):
-            if t % self.log_every_t == 0 or t == self.num_timesteps - 1:
+        for i, t in enumerate(self.sampler.timesteps):
+            if i % self.log_every_t == 0 or i == len(self.sampler.timesteps) - 1:
                 t = repeat(torch.tensor([t]), "1 -> b", b=n_row)
                 t = t.to(self.device).long()
                 noise = torch.randn_like(x_start)
-                x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
+                x_noisy = self.sampler.step(sample=x_start, t=t, noise=noise)
                 diffusion_row.append(x_noisy)
 
-        log["diffusion_row"] = self._get_rows_from_list(diffusion_row)
+        log["diffusion_row"] = self.__get_rows_from_list(diffusion_row)
 
         if sample:
             # get denoise row
             with self.ema_scope("Plotting"):
-                samples, denoise_row = self.sample(batch_size=N, return_intermediates=True)
+                samples, denoise_row = self.sample(batch_size=N, classes=class_labels, return_intermediates=True)
 
             log["samples"] = samples
-            log["denoise_row"] = self._get_rows_from_list(denoise_row)
+            log["denoise_row"] = self.__get_rows_from_list(denoise_row)
 
         if return_keys:
             if np.intersect1d(list(log.keys()), return_keys).shape[0] == 0:
@@ -342,9 +308,8 @@ class DDPM(LightningModule):
         return log
 
     def configure_optimizers(self):
-        lr = self.learning_rate
         params = list(self.model.parameters())
         if self.learn_logvar:
             params = params + [self.logvar]
-        opt = torch.optim.AdamW(params, lr=lr)
-        return opt
+
+        return self.init_optimizers(params)
