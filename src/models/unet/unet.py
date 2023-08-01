@@ -24,6 +24,7 @@ class Unet(nn.Module):
         dim: int = 2,
         num_attn_heads: int = 1,
         channels_per_head: int = -1,
+        num_class_embeds: Optional[int] = None,
     ):
         super().__init__()
 
@@ -37,6 +38,11 @@ class Unet(nn.Module):
             nn.SiLU(inplace=True),
             nn.Linear(time_embedding_dim, time_embedding_dim),
         )
+
+        if num_class_embeds is not None:
+            self.class_embedding = nn.Embedding(num_class_embeds, time_embedding_dim)
+        else:
+            self.class_embedding = None
 
         self.encoder = UnetEncoder(
             in_channels,
@@ -83,13 +89,19 @@ class Unet(nn.Module):
         self,
         x: torch.Tensor,
         time_steps: torch.Tensor,
+        class_labels: Optional[torch.Tensor] = None,
         context: Optional[torch.Tensor] = None,
     ):
-        time_embedding = self.time_embedding(time_steps)
+        emb = self.time_embedding(time_steps)
 
-        h, states = self.encoder(x, time_embedding, context)
-        h = self.middle_blocks(h, time_embedding, context)
-        h = self.decoder(h, states, time_embedding, context)
+        if class_labels is not None:
+            assert self.class_embedding is not None, "Model does not have class embedding module"
+            class_embedding = self.class_embedding(class_labels)
+            emb = emb + class_embedding
+
+        h, states = self.encoder(x, emb, context)
+        h = self.middle_blocks(h, emb, context)
+        h = self.decoder(h, states, emb, context)
 
         return self.out_proj(h)
 
