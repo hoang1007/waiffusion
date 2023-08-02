@@ -10,6 +10,7 @@ image_size: 32
 channels: 3
 first_stage_key: image
 conditional_stage_key: class
+log_every_t: 10
 
 sampler:
   beta_schedule: linear
