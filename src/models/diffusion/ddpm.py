@@ -274,6 +274,7 @@ class DDPM(BaseModel):
         x = self.get_input(batch, self.first_stage_key)
         class_labels = batch.get(self.conditional_stage_key, None)
         N = min(x.shape[0], N)
+        class_labels = class_labels[:N] if class_labels is not None else None
         n_row = min(x.shape[0], n_row)
         x = x.to(self.device)[:N]
         log["inputs"] = x
