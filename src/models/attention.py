@@ -1,6 +1,6 @@
 from abc import abstractmethod
 from math import sqrt
-from typing import Optional
+from typing import Optional, Literal, Tuple
 
 import torch
 import torch.nn as nn
@@ -12,9 +12,14 @@ from src.utils.module_utils import zero_module
 from .common import ConvND, Normalize
 
 
-class AttentionInterface(nn.Module):
+AttentionType = Literal["standard", "efficient", "flash"]
+
+
+class IAttention(nn.Module):
     @abstractmethod
-    def forward(self, qkv: torch.Tensor, key_padding_mask: Optional[torch.BoolTensor] = None):
+    def forward(
+        self, qkv: torch.Tensor, key_padding_mask: Optional[torch.BoolTensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             :param qkv: The tensor of query, key, value. Shape: (B, S, 3, H, D)
@@ -27,13 +32,15 @@ class AttentionInterface(nn.Module):
         pass
 
 
-class StandardAttention(AttentionInterface):
+class StandardAttention(IAttention):
     def __init__(self, dropout: float = 0.0):
         super().__init__()
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, qkv: torch.Tensor, key_padding_mask: Optional[torch.BoolTensor] = None):
+    def forward(
+        self, qkv: torch.Tensor, key_padding_mask: Optional[torch.BoolTensor] = None
+    ):
         q, k, v = torch.unbind(qkv, dim=2)
         _, _, H, D = q.shape
 
@@ -47,6 +54,9 @@ class StandardAttention(AttentionInterface):
         if key_padding_mask is not None:
             logits = logits.masked_fill(~key_padding_mask, -1e9)
 
+        # Numberical stability
+        logits = logits - logits.max(dim=-1, keepdim=True).values
+
         probs = F.softmax(logits, dim=-1)
         probs = self.dropout(probs)
 
@@ -57,12 +67,16 @@ class StandardAttention(AttentionInterface):
         return attn, probs
 
 
-class EfficientAttention(AttentionInterface):
+class EfficientAttention(IAttention):
     def __init__(self, dropout: float = 0.0):
         super().__init__()
 
-    def forward(self, qkv: torch.Tensor, key_padding_mask: Optional[torch.BoolTensor] = None):
-        assert key_padding_mask is None, "key_padding_mask is not supported for EfficientAttention"
+    def forward(
+        self, qkv: torch.Tensor, key_padding_mask: Optional[torch.BoolTensor] = None
+    ):
+        assert (
+            key_padding_mask is None
+        ), "key_padding_mask is not supported for EfficientAttention"
 
         q, k, v = torch.unbind(qkv, dim=2)
         _, _, H, D = q.shape
@@ -83,7 +97,7 @@ class EfficientAttention(AttentionInterface):
         return attn_vals, None
 
 
-class FlashAttention(AttentionInterface):
+class FlashAttention(IAttention):
     def __init__(self, dropout: float = 0.0):
         super().__init__()
 
@@ -94,16 +108,29 @@ class FlashAttention(AttentionInterface):
         except ImportError:
             raise ImportError("Please install flash_attn: pip install flash_attn")
 
-    def forward(self, qkv: torch.Tensor, key_padding_mask: Optional[torch.BoolTensor] = None):
+    def forward(
+        self, qkv: torch.Tensor, key_padding_mask: Optional[torch.BoolTensor] = None
+    ):
         dtype = qkv.dtype
         return self.attn(qkv.type(torch.half), key_padding_mask).type(dtype)
+
+
+def get_attention(attn_type: AttentionType, *args, **kwargs) -> IAttention:
+    if attn_type == "standard":
+        return StandardAttention(*args, **kwargs)
+    elif attn_type == "efficient":
+        return EfficientAttention(*args, **kwargs)
+    elif attn_type == "flash":
+        return FlashAttention(*args, **kwargs)
+    else:
+        raise ValueError(f"Unknown attention type: {attn_type}")
 
 
 class AttentionBlock(nn.Module):
     def __init__(
         self,
         channels: int,
-        attn: AttentionInterface,
+        attn_type: AttentionType = "standard",
         num_attn_heads: int = 1,
         channels_per_head: int = -1,
     ):
@@ -134,7 +161,7 @@ class AttentionBlock(nn.Module):
         self.norm = Normalize(channels)
         self.qkv = ConvND(1, channels, channels * 3, 1)
 
-        self.attn = attn
+        self.attn = get_attention(attn_type)
         self.proj_out = zero_module(ConvND(1, channels, channels, 1))
 
     def forward(self, x: torch.Tensor):
@@ -146,7 +173,9 @@ class AttentionBlock(nn.Module):
         x = x.reshape(b, c, -1)
         # (B, 3 * C, T)
         qkv = self.qkv(self.norm(x))
-        qkv = rearrange(qkv, "B (three H C) T -> B T three H C", three=3, H=self.num_attn_heads)
+        qkv = rearrange(
+            qkv, "B (three H C) T -> B T three H C", three=3, H=self.num_attn_heads
+        )
 
         # h.shape == (B, T, H, C // H)
         h, attn_weights = self.attn(qkv)

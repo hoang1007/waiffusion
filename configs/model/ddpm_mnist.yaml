@@ -13,8 +13,7 @@ unet:
   out_channels: 1
   hidden_channels: [64, 128, 256]
   num_res_blocks: 3
-  attn:
-    _target_: src.models.attention.EfficientAttention
+  attn_type: efficient
   attention_levels: [0, 1]
   dropout: 0.2
   dim: 2
