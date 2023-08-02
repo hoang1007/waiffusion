@@ -4,11 +4,17 @@ from typing import List, Optional, Tuple
 import torch
 from torch import nn
 
-from src.models.attention import AttentionBlock, AttentionInterface
-from src.models.common import ConvND, Downsample, Normalize, Upsample
+from src.models.attention import AttentionBlock, AttentionType
+from src.models.common import ConvND, Normalize
 from src.utils.module_utils import zero_module
 
-from .modules import ResBlock, SinusoidalTimestepEmbedding, TimestepEmbedSequential
+from .unet_blocks import (
+    ResBlock,
+    SinusoidalTimestepEmbedding,
+    TimestepEmbedSequential,
+    UpBlock,
+    DownBlock,
+)
 
 
 class Unet(nn.Module):
@@ -18,8 +24,8 @@ class Unet(nn.Module):
         out_channels: int,
         hidden_channels: List[int],
         num_res_blocks: int,
-        attn: AttentionInterface,
         attention_levels: Tuple[int],
+        attn_type: AttentionType = "standard",
         dropout: float = 0.0,
         dim: int = 2,
         num_attn_heads: int = 1,
@@ -31,6 +37,8 @@ class Unet(nn.Module):
         top_hidden_channels = hidden_channels[0]
         last_hidden_channels = hidden_channels[-1]
         time_embedding_dim = top_hidden_channels * 4
+
+        self.conv_in = ConvND(dim, in_channels, top_hidden_channels, 3, padding=1)
 
         self.time_embedding = nn.Sequential(
             SinusoidalTimestepEmbedding(top_hidden_channels),
@@ -44,40 +52,65 @@ class Unet(nn.Module):
         else:
             self.class_embedding = None
 
-        self.encoder = UnetEncoder(
-            in_channels,
-            hidden_channels,
-            time_embedding_dim,
-            num_res_blocks,
-            attn,
-            attention_levels,
-            dropout,
-            dim,
-            num_attn_heads,
-            channels_per_head,
-        )
+        self.down_blocks = nn.ModuleList()
+        self.mid_block = None
+        self.up_blocks = nn.ModuleList()
 
+        # down
+        in_channels = hidden_channels[0]
+        for level, channels in enumerate(hidden_channels):
+            add_attention = level in attention_levels
+            add_downsample = level != len(hidden_channels) - 1
+
+            self.down_blocks.append(DownBlock(
+                in_channels=in_channels,
+                out_channels=channels,
+                embedding_channels=time_embedding_dim,
+                dropout=dropout,
+                dim=dim,
+                num_layers=num_res_blocks,
+                add_downsample=add_downsample,
+                add_attention=add_attention,
+                attn_type=attn_type,
+                num_attn_heads=num_attn_heads,
+                channels_per_head=channels_per_head,
+            ))
+
+            in_channels = channels
+
+        # mid
         self.middle_blocks = TimestepEmbedSequential(
             ResBlock(last_hidden_channels, time_embedding_dim, dim=dim),
             AttentionBlock(
-                last_hidden_channels, deepcopy(attn), num_attn_heads, channels_per_head
+                last_hidden_channels, attn_type, num_attn_heads, channels_per_head
             ),
             ResBlock(last_hidden_channels, time_embedding_dim, dim=dim),
         )
 
-        self.decoder = UnetDecoder(
-            last_hidden_channels,
-            hidden_channels[::-1],
-            self.encoder.block_channels,
-            time_embedding_dim,
-            num_res_blocks,
-            attn,
-            attention_levels,
-            dropout,
-            dim,
-            num_attn_heads,
-            channels_per_head,
-        )
+        # up
+        prev_out_channels = hidden_channels[-1]
+        for level, channels in zip(reversed(range(len(hidden_channels))), reversed(hidden_channels)):
+            add_attention = level in attention_levels
+            add_upsample = level != 0
+            
+            in_channels = hidden_channels[max(0, level - 1)]
+
+            self.up_blocks.append(UpBlock(
+                in_channels=in_channels,
+                prev_out_channels=prev_out_channels,
+                out_channels=channels,
+                embedding_channels=time_embedding_dim,
+                dropout=dropout,
+                dim=dim,
+                num_layers=num_res_blocks + 1,
+                add_upsample=add_upsample,
+                add_attention=add_attention,
+                attn_type=attn_type,
+                num_attn_heads=num_attn_heads,
+                channels_per_head=channels_per_head,
+            ))
+
+            prev_out_channels = channels
 
         self.out_proj = nn.Sequential(
             Normalize(top_hidden_channels),
@@ -95,133 +128,27 @@ class Unet(nn.Module):
         emb = self.time_embedding(time_steps)
 
         if class_labels is not None:
-            assert self.class_embedding is not None, "Model does not have class embedding module"
+            assert (
+                self.class_embedding is not None
+            ), "Model does not have class embedding module"
             class_embedding = self.class_embedding(class_labels)
             emb = emb + class_embedding
+        
+        x = self.conv_in(x)
 
-        h, states = self.encoder(x, emb, context)
-        h = self.middle_blocks(h, emb, context)
-        h = self.decoder(h, states, emb, context)
+        hidden_states = [x]
+        for down_block in self.down_blocks:
+            x, hs = down_block(x, emb)
+            hidden_states.extend(hs)
+        
+        x = self.middle_blocks(x, emb)
 
-        return self.out_proj(h)
+        for up_block in self.up_blocks:
+            hs = hidden_states[-up_block.num_layers:]
+            hidden_states = hidden_states[:-up_block.num_layers]
 
+            x = up_block(x, hs, emb)
 
-class UnetEncoder(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        hidden_channels: Tuple[int],
-        embedding_dim: int,
-        num_res_blocks: int,
-        attn: AttentionInterface,
-        attention_levels: Tuple[int],
-        dropout: float = 0.0,
-        dim: int = 2,
-        num_attn_heads: int = 1,
-        channels_per_head: int = -1,
-    ):
-        super().__init__()
-
-        self.blocks = nn.ModuleList()
-        self._block_channels = []
-
-        cur_channels = hidden_channels[0]
-        self.blocks.append(
-            TimestepEmbedSequential(ConvND(dim, in_channels, cur_channels, 3, padding=1))
-        )
-        self._block_channels.append(cur_channels)
-
-        for level, channels in enumerate(hidden_channels):
-            for _ in range(num_res_blocks):
-                layers = [
-                    ResBlock(cur_channels, embedding_dim, channels, dim=dim, dropout=dropout)
-                ]
-
-                cur_channels = channels
-
-                if level in attention_levels:
-                    layers.append(
-                        AttentionBlock(channels, deepcopy(attn), num_attn_heads, channels_per_head)
-                    )
-
-                self.blocks.append(TimestepEmbedSequential(*layers))
-                self._block_channels.append(cur_channels)
-
-            if level != len(hidden_channels) - 1:  # if not last
-                self.blocks.append(TimestepEmbedSequential(Downsample(cur_channels, dim=dim)))
-                self._block_channels.append(cur_channels)
-
-    @property
-    def block_channels(self):
-        return self._block_channels
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        embedding: torch.Tensor,
-        context: Optional[torch.Tensor] = None,
-    ):
-        states = []
-        for module in self.blocks:
-            x = module(x, embedding, context)
-            states.append(x)
-
-        return x, states
-
-
-class UnetDecoder(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        hidden_channels: Tuple[int],
-        encoder_block_channels: List[int],
-        embedding_dim: int,
-        num_res_blocks: int,
-        attn: AttentionInterface,
-        attention_levels: Tuple[int],
-        dropout: float = 0.0,
-        dim: int = 2,
-        num_attn_heads: int = 1,
-        channels_per_head: int = -1,
-    ):
-        super().__init__()
-
-        self.blocks = nn.ModuleList()
-
-        cur_channels = in_channels
-        for level, channels in enumerate(hidden_channels):
-            for i in range(num_res_blocks + 1):
-                layers = [
-                    ResBlock(
-                        cur_channels + encoder_block_channels.pop(),
-                        embedding_dim,
-                        channels,
-                        dim=dim,
-                        dropout=dropout,
-                    )
-                ]
-
-                cur_channels = channels
-
-                if level in attention_levels:
-                    layers.append(
-                        AttentionBlock(channels, deepcopy(attn), num_attn_heads, channels_per_head)
-                    )
-
-                if level != len(hidden_channels) - 1 and i == num_res_blocks:
-                    layers.append(Upsample(cur_channels, dim=dim))
-
-                self.blocks.append(TimestepEmbedSequential(*layers))
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        enc_outputs: List[torch.Tensor],
-        embedding: torch.Tensor,
-        context: Optional[torch.Tensor] = None,
-    ):
-        for module in self.blocks:
-            x = torch.cat((x, enc_outputs.pop()), dim=1)
-            x = module(x, embedding, context)
+        x = self.out_proj(x)
 
         return x
