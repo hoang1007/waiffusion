@@ -1,4 +1,4 @@
-export WANDB_API_KEY=5a0a277301f0fb20cae141fe944f88db32db5a37
+export WANDB_API_KEY=<YOUR WANDB API KEY>
 export CUDA_VISIBLE_DEVICES=3
 
 python src/train.py \
