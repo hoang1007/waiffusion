@@ -74,7 +74,7 @@ class DDPMSampler(BaseSampler):
 
         self.register_buffer("betas", betas)
         self.register_buffer("alphas_cumprod", alphas_cumprod)
-        self.register_buffer("sqrt_alpha_cumprod", torch.sqrt(alphas_cumprod))
+        self.register_buffer("sqrt_alphas_cumprod", torch.sqrt(alphas_cumprod))
         self.register_buffer("sqrt_one_minus_alphas_cumprod", torch.sqrt(1.0 - alphas_cumprod))
         self.register_buffer("final_alpha_cumprod", one)
 

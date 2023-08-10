@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 from functools import partial
-from typing import Dict, Optional, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
@@ -11,12 +11,11 @@ from torchmetrics.image.inception import InceptionScore
 from torchvision.utils import make_grid
 from tqdm import tqdm
 
+from src.models.base import BaseModel
 from src.models.ema import EMA
-from src.models.unet import Unet
 from src.models.samplers import BaseSampler
-from src.utils.module_utils import default, load_ckpt
-
-from .base import BaseModel
+from src.models.unet import Unet
+from src.utils.module_utils import load_ckpt
 
 
 class DDPM(BaseModel):
@@ -118,10 +117,17 @@ class DDPM(BaseModel):
             print(f"Unexpected Keys: {unexpected}")
 
     @torch.no_grad()
-    def sample(self, batch_size: int, classes: Optional[List[int]] = None, return_intermediates: bool = False):
+    def sample(
+        self,
+        batch_size: int,
+        classes: Optional[List[int]] = None,
+        return_intermediates: bool = False,
+    ):
         if classes is not None:
             assert len(classes) == batch_size, "Number of classes must match batch size"
             class_labels = torch.tensor(classes, device=self.device).long()
+        else:
+            class_labels = None
 
         imgs = torch.randn(
             (batch_size, self.channels, self.image_size, self.image_size),
@@ -178,7 +184,7 @@ class DDPM(BaseModel):
         log_prefix = "train" if self.training else "val"
 
         loss_dict.update({f"{log_prefix}/loss": loss.item()})
-        
+
         return loss, loss_dict
 
     def get_input(self, batch, k):
@@ -283,7 +289,7 @@ class DDPM(BaseModel):
         diffusion_row = list()
         x_start = x[:n_row]
 
-        for i, t in enumerate(self.sampler.timesteps):
+        for i, t in enumerate(reversed(self.sampler.timesteps)):
             if i % self.log_every_t == 0 or i == len(self.sampler.timesteps) - 1:
                 t = repeat(torch.tensor([t]), "1 -> b", b=n_row)
                 t = t.to(self.device).long()
@@ -296,7 +302,9 @@ class DDPM(BaseModel):
         if sample:
             # get denoise row
             with self.ema_scope("Plotting"):
-                samples, denoise_row = self.sample(batch_size=N, classes=class_labels, return_intermediates=True)
+                samples, denoise_row = self.sample(
+                    batch_size=N, classes=class_labels, return_intermediates=True
+                )
 
             log["samples"] = samples
             log["denoise_row"] = self.__get_rows_from_list(denoise_row)

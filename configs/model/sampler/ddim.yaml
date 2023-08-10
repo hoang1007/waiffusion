@@ -2,9 +2,9 @@ _target_: src.models.samplers.DDIMSampler
 
 num_train_timesteps: 1000
 num_inference_timesteps: 50
-beta_schedule: 'linear'
+beta_schedule: "linear"
 beta_start: 1e-4
 beta_end: 2e-2
 given_betas: null
 clip_denoised: True
-parameterization: 'eps'
+parameterization: "eps"

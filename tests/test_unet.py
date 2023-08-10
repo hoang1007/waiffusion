@@ -1,7 +1,8 @@
 import pytest
-
 import torch
+
 from src.models.unet import Unet
+
 
 @pytest.mark.parametrize("batch_size", [4, 32])
 def test_unet(batch_size):

@@ -1,12 +1,12 @@
 from abc import abstractmethod
-from typing import Optional, List
+from typing import List, Optional
 
 import torch
 from torch import nn
 
+from src.models.attention import AttentionBlock, AttentionType
 from src.models.common import ConvND, Downsample, Normalize, Upsample
 from src.utils.module_utils import zero_module
-from src.models.attention import AttentionBlock, AttentionType
 
 
 class SinusoidalTimestepEmbedding(nn.Module):
@@ -72,7 +72,7 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
         for module in self:
             x = TimestepEmbedForwarder(module, x, embedding, context)
         return x
-    
+
 
 class DownBlock(TimestepBlock):
     def __init__(
@@ -97,27 +97,31 @@ class DownBlock(TimestepBlock):
         for i in range(num_layers):
             in_channels = in_channels if i == 0 else out_channels
 
-            self.res_blocks.append(ResBlock(
-                in_channels=in_channels,
-                out_channels=out_channels,
-                embedding_channels=embedding_channels,
-                use_conv=use_skip_conv,
-                dim=dim,
-                dropout=dropout
-            ))
+            self.res_blocks.append(
+                ResBlock(
+                    in_channels=in_channels,
+                    out_channels=out_channels,
+                    embedding_channels=embedding_channels,
+                    use_conv=use_skip_conv,
+                    dim=dim,
+                    dropout=dropout,
+                )
+            )
 
         if add_attention:
             self.attention_blocks = nn.ModuleList()
             for i in range(num_layers):
-                self.attention_blocks.append(AttentionBlock(
-                    out_channels,
-                    attn_type=attn_type,
-                    num_attn_heads=num_attn_heads,
-                    channels_per_head=channels_per_head,
-                ))
+                self.attention_blocks.append(
+                    AttentionBlock(
+                        out_channels,
+                        attn_type=attn_type,
+                        num_attn_heads=num_attn_heads,
+                        channels_per_head=channels_per_head,
+                    )
+                )
         else:
             self.attention_blocks = None
-        
+
         if add_downsample:
             self.downsampler = Downsample(out_channels, use_conv=use_down_conv, dim=dim)
         else:
@@ -137,9 +141,9 @@ class DownBlock(TimestepBlock):
         if self.downsampler is not None:
             x = self.downsampler(x)
             hidden_states.append(x)
-        
+
         return x, hidden_states
-    
+
     @property
     def num_layers(self):
         return len(self.res_blocks)
@@ -170,27 +174,31 @@ class UpBlock(TimestepBlock):
             res_skip_channels = in_channels if (i == num_layers - 1) else out_channels
             res_in_channels = prev_out_channels if i == 0 else out_channels
 
-            self.res_blocks.append(ResBlock(
-                in_channels=res_in_channels + res_skip_channels,
-                out_channels=out_channels,
-                embedding_channels=embedding_channels,
-                use_conv=use_skip_conv,
-                dim=dim,
-                dropout=dropout,
-            ))
+            self.res_blocks.append(
+                ResBlock(
+                    in_channels=res_in_channels + res_skip_channels,
+                    out_channels=out_channels,
+                    embedding_channels=embedding_channels,
+                    use_conv=use_skip_conv,
+                    dim=dim,
+                    dropout=dropout,
+                )
+            )
 
         if add_attention:
             self.attention_blocks = nn.ModuleList()
             for i in range(num_layers):
-                self.attention_blocks.append(AttentionBlock(
-                    out_channels,
-                    attn_type=attn_type,
-                    num_attn_heads=num_attn_heads,
-                    channels_per_head=channels_per_head,
-                ))
+                self.attention_blocks.append(
+                    AttentionBlock(
+                        out_channels,
+                        attn_type=attn_type,
+                        num_attn_heads=num_attn_heads,
+                        channels_per_head=channels_per_head,
+                    )
+                )
         else:
             self.attention_blocks = None
-        
+
         if add_upsample:
             self.upsampler = Upsample(out_channels, use_conv=use_up_conv, dim=dim)
         else:
@@ -204,7 +212,7 @@ class UpBlock(TimestepBlock):
 
             if self.attention_blocks is not None:
                 x = self.attention_blocks[i](x)
-        
+
         if self.upsampler is not None:
             x = self.upsampler(x)
 
@@ -213,7 +221,6 @@ class UpBlock(TimestepBlock):
     @property
     def num_layers(self):
         return len(self.res_blocks)
-        
 
 
 class ResBlock(TimestepBlock):

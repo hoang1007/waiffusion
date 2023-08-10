@@ -17,8 +17,9 @@ class Cifar10Dataset(Dataset):
         "frog",
         "horse",
         "ship",
-        "truck"
+        "truck",
     ]
+
     def __init__(self, train: bool, data_dir: str = "data") -> None:
         super().__init__()
 

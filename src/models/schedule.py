@@ -1,11 +1,9 @@
-from typing import Literal, Optional, Union, TypeAlias
-import torch
 import math
+from typing import Literal, Optional, TypeAlias, Union
 
+import torch
 
-BetaSchedule: TypeAlias = Literal[
-    "linear", "scaled_linear", "squaredcos_cap_v2", "sigmoid"
-]
+BetaSchedule: TypeAlias = Literal["linear", "scaled_linear", "squaredcos_cap_v2", "sigmoid"]
 
 
 def make_beta_schedule(
@@ -16,12 +14,14 @@ def make_beta_schedule(
     device: Optional[Union[torch.device, str]] = None,
 ):
     if beta_schedule == "linear":
-        betas = torch.linspace(beta_start, beta_end, num_timesteps, dtype=torch.float32, device=device)
+        betas = torch.linspace(
+            beta_start, beta_end, num_timesteps, dtype=torch.float32, device=device
+        )
     elif beta_schedule == "scaled_linear":
         # this schedule is very specific to the latent diffusion model.
-        betas = (
-            torch.linspace(beta_start**0.5, beta_end**0.5, num_timesteps, dtype=torch.float32, device=device).pow_(2.0)
-        )
+        betas = torch.linspace(
+            beta_start**0.5, beta_end**0.5, num_timesteps, dtype=torch.float32, device=device
+        ).pow_(2.0)
     elif beta_schedule == "squaredcos_cap_v2":
         # Glide cosine schedule
         betas = betas_for_alpha_bar(num_timesteps)
@@ -31,7 +31,7 @@ def make_beta_schedule(
         betas = torch.sigmoid(betas) * (beta_end - beta_start) + beta_start
     else:
         raise NotImplementedError(f"{beta_schedule} is not supported")
-    
+
     return betas
 
 

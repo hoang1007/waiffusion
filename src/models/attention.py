@@ -1,6 +1,6 @@
 from abc import abstractmethod
 from math import sqrt
-from typing import Optional, Literal, Tuple
+from typing import Literal, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -10,7 +10,6 @@ from einops import einsum, rearrange
 from src.utils.module_utils import zero_module
 
 from .common import ConvND, Normalize
-
 
 AttentionType = Literal["standard", "efficient", "flash"]
 
@@ -38,9 +37,7 @@ class StandardAttention(IAttention):
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(
-        self, qkv: torch.Tensor, key_padding_mask: Optional[torch.BoolTensor] = None
-    ):
+    def forward(self, qkv: torch.Tensor, key_padding_mask: Optional[torch.BoolTensor] = None):
         q, k, v = torch.unbind(qkv, dim=2)
         _, _, H, D = q.shape
 
@@ -71,12 +68,8 @@ class EfficientAttention(IAttention):
     def __init__(self, dropout: float = 0.0):
         super().__init__()
 
-    def forward(
-        self, qkv: torch.Tensor, key_padding_mask: Optional[torch.BoolTensor] = None
-    ):
-        assert (
-            key_padding_mask is None
-        ), "key_padding_mask is not supported for EfficientAttention"
+    def forward(self, qkv: torch.Tensor, key_padding_mask: Optional[torch.BoolTensor] = None):
+        assert key_padding_mask is None, "key_padding_mask is not supported for EfficientAttention"
 
         q, k, v = torch.unbind(qkv, dim=2)
         _, _, H, D = q.shape
@@ -108,9 +101,7 @@ class FlashAttention(IAttention):
         except ImportError:
             raise ImportError("Please install flash_attn: pip install flash_attn")
 
-    def forward(
-        self, qkv: torch.Tensor, key_padding_mask: Optional[torch.BoolTensor] = None
-    ):
+    def forward(self, qkv: torch.Tensor, key_padding_mask: Optional[torch.BoolTensor] = None):
         dtype = qkv.dtype
         return self.attn(qkv.type(torch.half), key_padding_mask).type(dtype)
 
@@ -173,9 +164,7 @@ class AttentionBlock(nn.Module):
         x = x.reshape(b, c, -1)
         # (B, 3 * C, T)
         qkv = self.qkv(self.norm(x))
-        qkv = rearrange(
-            qkv, "B (three H C) T -> B T three H C", three=3, H=self.num_attn_heads
-        )
+        qkv = rearrange(qkv, "B (three H C) T -> B T three H C", three=3, H=self.num_attn_heads)
 
         # h.shape == (B, T, H, C // H)
         h, attn_weights = self.attn(qkv)
