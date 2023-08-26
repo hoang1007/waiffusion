@@ -42,14 +42,14 @@ class TimestepBlock(nn.Module):
     """The module takes timestep embedding as a second argument."""
 
     @abstractmethod
-    def forward(self, x: torch.Tensor, embedding: torch.Tensor):
+    def forward(self, x: torch.Tensor, embedding: Optional[torch.Tensor] = None):
         pass
 
 
 def TimestepEmbedForwarder(
     module: nn.Module,
     x: torch.Tensor,
-    embedding: torch.Tensor,
+    embedding: Optional[torch.Tensor] = None,
     context: Optional[torch.Tensor] = None,
 ):
     """An utility function to forward a module with extra timestep embedding argument."""
@@ -66,7 +66,7 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
     def forward(
         self,
         x: torch.Tensor,
-        embedding: torch.Tensor,
+        embedding: Optional[torch.Tensor],
         context: Optional[torch.Tensor] = None,
     ):
         for module in self:
@@ -79,7 +79,7 @@ class DownBlock(TimestepBlock):
         self,
         in_channels: int,
         out_channels: int,
-        embedding_channels: int,
+        embedding_channels: Optional[int] = None,
         dropout: float = 0.0,
         dim: int = 2,
         num_layers: int = 1,
@@ -223,11 +223,79 @@ class UpBlock(TimestepBlock):
         return len(self.res_blocks)
 
 
+class MidBlock(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        embedding_channels: Optional[int] = None,
+        dropout: float = 0.0,
+        dim: int = 2,
+        num_layers: int = 1,
+        use_skip_conv: bool = True,
+        add_attention: bool = True,
+        attn_type: AttentionType = "standard",
+        num_attn_heads: int = 1,
+        channels_per_head: int = -1,
+    ):
+        super().__init__()
+
+        self.res_blocks = nn.ModuleList([
+            ResBlock(
+                in_channels=in_channels,
+                embedding_channels=embedding_channels,
+                out_channels=in_channels,
+                use_conv=use_skip_conv,
+                dim=dim,
+                dropout=dropout,
+            )
+        ])
+
+        for _ in range(num_layers):
+            self.res_blocks.append(
+                ResBlock(
+                    in_channels=in_channels,
+                    embedding_channels=embedding_channels,
+                    out_channels=in_channels,
+                    use_conv=use_skip_conv,
+                    dim=dim,
+                    dropout=dropout,
+                )
+            )
+
+        
+        self.attention_blocks = []
+        for _ in range(num_layers):
+            if add_attention:
+                self.attention_blocks.append(
+                    AttentionBlock(
+                        in_channels,
+                        attn_type=attn_type,
+                        num_attn_heads=num_attn_heads,
+                        channels_per_head=channels_per_head,
+                    )
+                )
+            else:
+                self.attention_blocks.append(None)
+        
+        if add_attention:
+            self.attention_blocks = nn.ModuleList(self.attention_blocks)
+
+    def forward(self, x: torch.Tensor, embedding: Optional[torch.Tensor] = None):
+        x = self.res_blocks[0](x, embedding)
+
+        for attn, res_block in zip(self.attention_blocks, self.res_blocks[1:]):
+            if attn is not None:
+                x = attn(x)
+            x = res_block(x, embedding)
+
+        return x
+
+
 class ResBlock(TimestepBlock):
     def __init__(
         self,
         in_channels: int,
-        embedding_channels: int,
+        embedding_channels: Optional[int] = None,
         out_channels: Optional[int] = None,
         use_conv: bool = False,
         dim: int = 2,
@@ -249,7 +317,6 @@ class ResBlock(TimestepBlock):
 
         self.in_channels = in_channels
         self.out_channels = in_channels if out_channels is None else out_channels
-
         self.embedding_channels = embedding_channels
 
         self.in_layers = nn.Sequential(
@@ -258,9 +325,11 @@ class ResBlock(TimestepBlock):
             ConvND(dim, self.in_channels, self.out_channels, 3, padding=1),
         )
 
-        self.emb_layers = nn.Sequential(
-            nn.SiLU(), nn.Linear(self.embedding_channels, self.out_channels)
-        )
+        if self.embedding_channels is not None:
+            self.emb_layers = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(self.embedding_channels, self.out_channels)
+            )
 
         self.out_layers = nn.Sequential(
             Normalize(self.out_channels),
@@ -276,7 +345,7 @@ class ResBlock(TimestepBlock):
         else:
             self.skip_connector = ConvND(dim, self.in_channels, self.out_channels, 1)
 
-    def forward(self, x: torch.Tensor, embedding: torch.Tensor):
+    def forward(self, x: torch.Tensor, embedding: Optional[torch.Tensor] = None):
         """
         Args:
             :param x: The input tensor.
@@ -284,11 +353,13 @@ class ResBlock(TimestepBlock):
         """
         h = self.in_layers(x)
 
-        emb_out = self.emb_layers(embedding).type_as(h)
-        while len(emb_out.shape) < len(h.shape):
-            emb_out = emb_out.unsqueeze_(-1)
+        if embedding is not None:
+            assert self.embedding_channels is not None, "Model does not have embedding module"
+            emb_out = self.emb_layers(embedding).type_as(h)
+            while len(emb_out.shape) < len(h.shape):
+                emb_out = emb_out.unsqueeze_(-1)
 
-        h = h + emb_out
+            h = h + emb_out
         h = self.out_layers(h)
 
         return self.skip_connector(x) + h

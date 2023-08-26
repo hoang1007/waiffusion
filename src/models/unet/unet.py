@@ -11,6 +11,7 @@ from src.utils.module_utils import zero_module
 from .unet_blocks import (
     DownBlock,
     ResBlock,
+    MidBlock,
     SinusoidalTimestepEmbedding,
     TimestepEmbedSequential,
     UpBlock,
@@ -81,10 +82,20 @@ class Unet(nn.Module):
             in_channels = channels
 
         # mid
-        self.middle_blocks = TimestepEmbedSequential(
-            ResBlock(last_hidden_channels, time_embedding_dim, dim=dim),
-            AttentionBlock(last_hidden_channels, attn_type, num_attn_heads, channels_per_head),
-            ResBlock(last_hidden_channels, time_embedding_dim, dim=dim),
+        # self.middle_blocks = TimestepEmbedSequential(
+        #     ResBlock(last_hidden_channels, time_embedding_dim, dim=dim),
+        #     AttentionBlock(last_hidden_channels, attn_type, num_attn_heads, channels_per_head),
+        #     ResBlock(last_hidden_channels, time_embedding_dim, dim=dim),
+        # )
+        self.mid_block = MidBlock(
+            in_channels=last_hidden_channels,
+            embedding_channels=time_embedding_dim,
+            dim=dim,
+            num_layers=1,
+            attn_type=attn_type,
+            num_attn_heads=num_attn_heads,
+            channels_per_head=channels_per_head,
+            dropout=dropout
         )
 
         # up
@@ -143,7 +154,7 @@ class Unet(nn.Module):
             x, hs = down_block(x, emb)
             hidden_states.extend(hs)
 
-        x = self.middle_blocks(x, emb)
+        x = self.mid_block(x, emb)
 
         for up_block in self.up_blocks:
             hs = hidden_states[-up_block.num_layers :]
