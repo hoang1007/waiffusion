@@ -45,32 +45,35 @@ class Cifar10DataModule(LightningDataModule):
         pin_memory: bool = False,
     ):
         super().__init__()
-        self.save_hyperparameters(logger=False)
+        self.data_dir = data_dir
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
 
         self.data_train = None
         self.data_val = None
 
     def setup(self, stage: Optional[str] = None):
         if self.data_train is None:
-            self.data_train = Cifar10Dataset(train=True, data_dir=self.hparams.data_dir)
+            self.data_train = Cifar10Dataset(train=True, data_dir=self.data_dir)
 
         if self.data_val is None:
-            self.data_val = Cifar10Dataset(train=False, data_dir=self.hparams.data_dir)
+            self.data_val = Cifar10Dataset(train=False, data_dir=self.data_dir)
 
     def train_dataloader(self):
         return DataLoader(
             self.data_train,
-            batch_size=self.hparams.batch_size,
+            batch_size=self.batch_size,
             shuffle=True,
-            num_workers=self.hparams.num_workers,
-            pin_memory=self.hparams.pin_memory,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
         )
 
     def val_dataloader(self):
         return DataLoader(
             self.data_val,
-            batch_size=self.hparams.batch_size,
+            batch_size=self.batch_size,
             shuffle=False,
-            num_workers=self.hparams.num_workers,
-            pin_memory=self.hparams.pin_memory,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
         )
