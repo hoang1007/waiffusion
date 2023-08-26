@@ -9,7 +9,7 @@ from src.models.base import BaseModel
 from .vae_blocks import Encoder, Decoder, DiagonalGaussianDistribution
 
 
-class AutoencoderKL(BaseModel):
+class AutoEncoderKL(BaseModel):
     def __init__(
         self,
         in_channels: int = 3,
