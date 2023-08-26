@@ -1,0 +1,35 @@
+# @package _global_
+
+defaults:
+  - override /datamodule: cifar10.yaml
+  - override /model: diffusion/conditional_ddim_cifar.yaml
+  - override /callbacks: default.yaml
+  - override /trainer: gpu.yaml
+  - override /logger: wandb.yaml
+
+# all parameters below will be merged with parameters from default configurations set above
+# this allows you to overwrite only specified parameters
+
+seed: 188
+
+trainer:
+  max_epochs: 20
+  precision: 16-mixed
+  gradient_clip_val: 1.0
+
+datamodule:
+  batch_size: 128
+
+logger:
+  wandb:
+    project: "waiffusion"
+    tags: ${tags}
+    group: "ddpm"
+
+callbacks:
+  model_checkpoint:
+    monitor: "val/loss"
+    mode: "min"
+
+train: true
+test: false
