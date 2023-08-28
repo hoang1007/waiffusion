@@ -19,14 +19,6 @@ class LDM(DDPM):
         self.vae.freeze()
         self.vae.eval()
 
-    def get_input(self, batch, key):
-        x = batch[key]
-        if len(x.shape) == 3:
-            x = x.unsqueeze(1)
-        # x = rearrange(x, "b h w c -> b c h w")
-        x = x.contiguous().float()
-        return x
-
     def shared_step(self, batch):
         x = self.get_input(batch, self.first_stage_key)
         class_labels = batch.get(self.conditional_stage_key, None)

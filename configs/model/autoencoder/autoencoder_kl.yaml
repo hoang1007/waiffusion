@@ -9,22 +9,23 @@ attention_levels: []
 dropout: 0.1
 image_key: image
 
-optimizer:
-  _target_: torch.optim.AdamW
-  _partial_: True
-  lr: 2e-4
-  weight_decay: 0.0001
+# optimizer:
+#   _target_: torch.optim.AdamW
+#   _partial_: True
+#   lr: 2e-4
+#   weight_decay: 0.0001
 
-scheduler_config:
-  scheduler:
-    _target_: torch.optim.lr_scheduler.OneCycleLR
-    _partial_: True
-    max_lr: 2e-4
-    total_steps: ${trainer.max_epochs}
-  interval: epoch
+# scheduler_config:
+#   scheduler:
+#     _target_: torch.optim.lr_scheduler.OneCycleLR
+#     _partial_: True
+#     max_lr: 2e-4
+#     total_steps: ${trainer.max_epochs}
+#   interval: epoch
 
-# loss_fn:
-#   _target_: src.losses.lpips.LPIPSWithDiscriminator
-#   disc_start: 50001
-#   kl_weight: 0.000001
-#   disc_weight: 0.5
+loss_fn:
+  _target_: src.losses.lpips.LPIPSWithDiscriminator
+  # disc_start: 50001
+  disc_start: 5001
+  kl_weight: 0.0001
+  disc_weight: 0.5
