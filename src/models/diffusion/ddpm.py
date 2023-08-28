@@ -22,7 +22,7 @@ class DDPM(BaseModel):
     # classic DDPM with Gaussian diffusion, in image space
     def __init__(
         self,
-        model: Unet,
+        unet: Unet,
         sampler: BaseSampler,
         optimizer: Optional[partial] = None,
         scheduler_config: Optional[Dict] = None,
@@ -34,7 +34,6 @@ class DDPM(BaseModel):
         use_ema=True,
         first_stage_key="image",
         conditional_stage_key="class",
-        image_size=256,
         channels=3,
         log_every_t=100,
         parameterization="eps",  # all assuming fixed variance schedules
@@ -53,15 +52,14 @@ class DDPM(BaseModel):
         self.log_every_t = log_every_t
         self.first_stage_key = first_stage_key
         self.conditional_stage_key = conditional_stage_key
-        self.image_size = image_size  # try conv?
         self.channels = channels
         self.num_train_timesteps = num_train_timesteps
-        self.model = model
+        self.unet = unet
         self.sampler = sampler
 
         self.use_ema = use_ema
         if self.use_ema:
-            self.model_ema = EMA(self.model)
+            self.model_ema = EMA(self.unet)
             print(f"Keeping EMAs of {len(list(self.model_ema.buffers()))}.")
 
         if ckpt_path is not None:
@@ -81,15 +79,15 @@ class DDPM(BaseModel):
     @contextmanager
     def ema_scope(self, context=None):
         if self.use_ema:
-            self.model_ema.store(self.model.parameters())
-            self.model_ema.copy_to(self.model)
+            self.model_ema.store(self.unet.parameters())
+            self.model_ema.copy_to(self.unet)
             if context is not None:
                 print(f"{context}: Switched to EMA weights")
         try:
             yield None
         finally:
             if self.use_ema:
-                self.model_ema.restore(self.model.parameters())
+                self.model_ema.restore(self.unet.parameters())
                 if context is not None:
                     print(f"{context}: Restored training weights")
 
@@ -106,7 +104,7 @@ class DDPM(BaseModel):
         missing, unexpected = (
             self.load_state_dict(sd, strict=False)
             if not only_model
-            else self.model.load_state_dict(sd, strict=False)
+            else self.unet.load_state_dict(sd, strict=False)
         )
         print(
             f"Restored from {path} with {len(missing)} missing and {len(unexpected)} unexpected keys"
@@ -130,14 +128,14 @@ class DDPM(BaseModel):
             class_labels = None
 
         imgs = torch.randn(
-            (batch_size, self.channels, self.image_size, self.image_size),
+            (batch_size, self.unet.in_channels, *self.unet.sample_size),
             device=self.device,
         )
         intermediates = [imgs]
 
         for i, t in enumerate(tqdm(self.sampler.timesteps, desc="Sampling t")):
             t = torch.full((batch_size,), t, device=self.device, dtype=torch.long)
-            model_output = self.model(imgs, t, class_labels=class_labels)
+            model_output = self.unet(imgs, t, class_labels=class_labels)
             imgs = self.sampler.reverse_step(model_output, t, imgs)
 
             if i % self.log_every_t == 0 or i == len(self.sampler.timesteps) - 1:
@@ -168,7 +166,7 @@ class DDPM(BaseModel):
         t = torch.randint(0, self.num_train_timesteps, (x.shape[0],), device=self.device).long()
         noise = torch.randn_like(x)
         x_noisy = self.sampler.step(sample=x, t=t, noise=noise)
-        model_out = self.model(x_noisy, t, class_labels=class_labels, context=context)
+        model_out = self.unet(x_noisy, t, class_labels=class_labels, context=context)
 
         loss_dict = {}
         if self.parameterization == "eps":
@@ -265,7 +263,7 @@ class DDPM(BaseModel):
 
     def on_train_batch_end(self, *args, **kwargs):
         if self.use_ema:
-            self.model_ema(self.model)
+            self.model_ema(self.unet)
 
     def __get_rows_from_list(self, samples):
         n_imgs_per_row = len(samples)
@@ -317,7 +315,7 @@ class DDPM(BaseModel):
         return log
 
     def configure_optimizers(self):
-        params = list(self.model.parameters())
+        params = list(self.unet.parameters())
         if self.learn_logvar:
             params = params + [self.logvar]
 

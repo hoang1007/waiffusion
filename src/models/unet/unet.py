@@ -21,6 +21,7 @@ from .unet_blocks import (
 class Unet(nn.Module):
     def __init__(
         self,
+        sample_size: Tuple[int, ...],
         in_channels: int,
         out_channels: int,
         hidden_channels: List[int],
@@ -34,6 +35,9 @@ class Unet(nn.Module):
         num_class_embeds: Optional[int] = None,
     ):
         super().__init__()
+
+        self.sample_size = sample_size
+        self.in_channels = in_channels
 
         top_hidden_channels = hidden_channels[0]
         last_hidden_channels = hidden_channels[-1]
@@ -82,11 +86,6 @@ class Unet(nn.Module):
             in_channels = channels
 
         # mid
-        # self.middle_blocks = TimestepEmbedSequential(
-        #     ResBlock(last_hidden_channels, time_embedding_dim, dim=dim),
-        #     AttentionBlock(last_hidden_channels, attn_type, num_attn_heads, channels_per_head),
-        #     ResBlock(last_hidden_channels, time_embedding_dim, dim=dim),
-        # )
         self.mid_block = MidBlock(
             in_channels=last_hidden_channels,
             embedding_channels=time_embedding_dim,
@@ -140,6 +139,10 @@ class Unet(nn.Module):
         class_labels: Optional[torch.Tensor] = None,
         context: Optional[torch.Tensor] = None,
     ):
+        assert (
+            tuple(x.shape[2:]) == tuple(self.sample_size),
+            f"Sample does not match the shape {self.sample_size}. Got {x.shape[2:]}"
+        )
         emb = self.time_embedding(time_steps)
 
         if class_labels is not None:

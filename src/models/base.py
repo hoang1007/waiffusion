@@ -1,12 +1,15 @@
 from functools import partial
 from typing import Dict, Optional
 
+import torch
 from pytorch_lightning import LightningModule
 
 
 class BaseModel(LightningModule):
     def __init__(
-        self, optimizer: Optional[partial] = None, scheduler_config: Optional[Dict] = None
+        self,
+        optimizer: Optional[partial] = None,
+        scheduler_config: Optional[Dict] = None,
     ):
         super().__init__()
         self.optimizer = optimizer

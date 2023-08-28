@@ -1,43 +1,43 @@
-_target_: src.models.diffusion.DDPM
+_target_: src.models.diffusion.LDM
 # _partial_: True
 
 defaults:
-  - sampler: ddpm.yaml
+  - sampler: ddim.yaml
+  - vae: ../autoencoder/autoencoder_kl.yaml
   - _self_
 
 num_train_timesteps: 1000
 first_stage_key: image
 conditional_stage_key: class
+log_every_t: 10
 
 sampler:
   beta_schedule: linear
 
-model:
+unet:
   _target_: src.models.unet.Unet
-  sample_size: [32, 32]
-  in_channels: 3
-  out_channels: 3
-  hidden_channels: [128, 256, 256, 256]
+  in_channels: 8
+  out_channels: 8
+  sample_size: [8, 8]
+  hidden_channels: [128, 256]
   num_res_blocks: 2
-  attn_type: efficient
-  attention_levels: [0, 1, 2]
+  attn_type: standard
+  attention_levels: [1]
   dropout: 0.1
   dim: 2
   channels_per_head: 32
+  num_class_embeds: 10
 
 optimizer:
   _target_: torch.optim.Adam
   _partial_: True
-  lr: 1e-4
-  betas: [0.9, 0.999]
-  eps: 1e-8
-  weight_decay: 0.0001
+  lr: 2e-4
+  # weight_decay: 0.0001
 
 scheduler_config:
   scheduler:
     _target_: torch.optim.lr_scheduler.OneCycleLR
     _partial_: True
-    max_lr: 1e-4
-    epochs: ${trainer.max_epochs}
-    steps_per_epoch: 391
-  interval: step
+    max_lr: 2e-4
+    total_steps: ${trainer.max_epochs}
+  interval: epoch

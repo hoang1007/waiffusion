@@ -6,7 +6,6 @@ defaults:
   - _self_
 
 num_train_timesteps: 1000
-image_size: 32
 channels: 3
 first_stage_key: image
 conditional_stage_key: class
@@ -15,10 +14,11 @@ log_every_t: 10
 sampler:
   beta_schedule: linear
 
-model:
+unet:
   _target_: src.models.unet.Unet
   in_channels: 3
   out_channels: 3
+  sample_size: [32, 32]
   hidden_channels: [128, 256, 256, 256]
   num_res_blocks: 2
   attn_type: standard

@@ -6,8 +6,6 @@ defaults:
   - _self_
 
 num_train_timesteps: 1000
-image_size: 32
-channels: 3
 first_stage_key: image
 conditional_stage_key: class
 
@@ -17,6 +15,7 @@ sampler:
 
 model:
   _target_: src.models.unet.Unet
+  sample_size: [32, 32]
   in_channels: 3
   out_channels: 3
   hidden_channels: [128, 256, 256, 256]

@@ -24,7 +24,10 @@ class Cifar10Dataset(Dataset):
         super().__init__()
 
         self.dataset = CIFAR10(
-            data_dir, train=train, download=True, transform=transforms.ToTensor()
+            data_dir, train=train, download=True, transform=transforms.Compose([
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor()
+            ])
         )
 
     def __len__(self):
