@@ -86,46 +86,45 @@ class AutoEncoderKL(BaseModel):
         x = batch[key]
         return x
     
-    def get_rec_loss(self, input, recon):
-        return nn.functional.mse_loss(input, recon)
-    
-    def get_kl_loss(self, posterior):
-        kl_loss = 0.5 * (posterior.mean ** 2 + posterior.var - posterior.logvar - 1).sum()
-        return kl_loss
+    def get_loss(self, input, recon, posterior):
+        rec_loss = nn.functional.l1_loss(input, recon)
+        # rec_loss = nn.functional.binary_cross_entropy_with_logits(recon, input)    
+
+        kl_loss = -0.5 * (1 + posterior.logvar - posterior.mean ** 2 - posterior.var).sum(dim=1)
+        kl_loss = kl_loss.mean()
+
+        return {
+            "rec_loss": rec_loss,
+            "kl_loss": kl_loss,
+            "loss": rec_loss + 1e-4 * kl_loss,
+        }
 
     def training_step(self, batch, batch_idx):
         x = self.get_input(batch, self.image_key)
 
         dec, posterior = self(x)
 
-        rec_loss = self.get_rec_loss(x, dec)
-        kl_loss = self.get_kl_loss(posterior)
-        loss = rec_loss + kl_loss
+        loss_dict = self.get_loss(x, dec, posterior)
 
-        self.log_dict({
-            "train/rec_loss": rec_loss.item(),
-            "train/kl_loss": kl_loss.item(),
-            "train/loss": loss.item(),
-        }, on_step=True, on_epoch=True)
-
-        return loss
+        self.log_dict(
+            {f"train/{k}": v.item() for k, v in loss_dict.items()},
+            on_step=True,
+            on_epoch=True
+        )
+        
+        return loss_dict["loss"]
     
     def validation_step(self, batch, batch_idx):
         x = self.get_input(batch, self.image_key)
 
         dec, posterior = self(x)
+        loss_dict = self.get_loss(x, dec, posterior)
 
-        rec_loss = self.get_rec_loss(x, dec)
-        kl_loss = self.get_kl_loss(posterior)
-        loss = rec_loss + kl_loss
-
-        self.log_dict({
-            "val/rec_loss": rec_loss.item(),
-            "val/kl_loss": kl_loss.item(),
-            "val/loss": loss.item(),
-        }, on_step=False, on_epoch=True)
-
-        return loss
+        self.log_dict(
+            {f"val/{k}": v.item() for k, v in loss_dict.items()},
+            on_step=False,
+            on_epoch=True
+        )
 
     @torch.no_grad()
     def log_images(self, batch, only_inputs=False, **kwargs):

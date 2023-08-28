@@ -2,7 +2,7 @@
 
 defaults:
   - override /datamodule: cifar10.yaml
-  - override /model: autoencoder/autoencoder_kl.yaml
+  - override /model: diffusion/conditional_ldm_cifar.yaml
   - override /callbacks: default.yaml
   - override /trainer: gpu.yaml
   - override /logger: wandb.yaml
@@ -12,8 +12,11 @@ defaults:
 
 seed: 188
 
+model:
+  vae_pretrained_path: ${paths.log_dir}/train/runs/2023-08-28_01-29-27/checkpoints/last.ckpt
+
 trainer:
-  max_epochs: 20
+  max_epochs: 100
   precision: 16-mixed
   gradient_clip_val: 1.0
 
@@ -24,11 +27,11 @@ logger:
   wandb:
     project: "waiffusion"
     tags: ${tags}
-    group: "autoencoder"
+    group: "ldm"
 
 callbacks:
   model_checkpoint:
-    monitor: "val/rec_loss"
+    monitor: "val/loss"
     mode: "min"
 
 train: true
