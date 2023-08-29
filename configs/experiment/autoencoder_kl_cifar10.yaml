@@ -15,7 +15,6 @@ seed: 188
 trainer:
   max_epochs: 20
   precision: 16-mixed
-  gradient_clip_val: 1.0
 
 datamodule:
   batch_size: 128
