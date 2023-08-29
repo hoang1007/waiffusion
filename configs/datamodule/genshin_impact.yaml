@@ -1,0 +1,22 @@
+_target_: src.datamodules.DataModule
+
+batch_size: 16
+train_ratio: 0.75
+num_workers: 4
+pin_memory: false
+dataset:
+  _target_: src.datamodules.PromptingImageFolderDataset
+  data_dir: ${paths.data_dir}/genshin-impact/extracted
+  transform:
+    _target_: torchvision.transforms.Compose
+    transforms:
+      - _target_: src.transforms.Resize
+        size: [256, 256]
+        keep_ratio: true
+        padding: true
+        pad_val: 125
+      - _target_: torchvision.transforms.RandomHorizontalFlip
+      - _target_: torchvision.transforms.ToTensor
+      - _target_: torchvision.transforms.Normalize
+        mean: [0.5, 0.5, 0.5]
+        std: [0.5, 0.5, 0.5]
