@@ -1,5 +1,17 @@
-_target_: src.datamodules.cifar_datamodule.Cifar10DataModule
-data_dir: ${paths.data_dir}
+_target_: src.datamodules.DataModule
+
 batch_size: 128
+train_ratio: 0.75
 num_workers: 8
 pin_memory: False
+dataset:
+  _target_: src.datamodules.Cifar10Dataset
+  data_dir: ${paths.data_dir}/cifar10
+  transform:
+    _target_: torchvision.transforms.Compose
+    transforms:
+      - _target_: torchvision.transforms.RandomHorizonalFlip
+      - _target_: torchvision.transforms.ToTensor
+      - _target_: torchvision.transforms.Normalize
+        mean: [0.5, 0.5, 0.5]
+        std: [0.5, 0.5, 0.5]

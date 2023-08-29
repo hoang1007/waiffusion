@@ -12,7 +12,7 @@ conditional_stage_key: class
 sampler:
   beta_schedule: linear
 
-model:
+unet:
   _target_: src.models.unet.Unet
   sample_size: [32, 32]
   in_channels: 3

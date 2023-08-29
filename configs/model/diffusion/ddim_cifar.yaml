@@ -13,7 +13,7 @@ sampler:
   beta_schedule: linear
   num_inference_timesteps: 50
 
-model:
+unet:
   _target_: src.models.unet.Unet
   sample_size: [32, 32]
   in_channels: 3
