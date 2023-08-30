@@ -92,18 +92,18 @@ class AutoEncoderKL(BaseModel):
         x = batch[key]
         return x
     
-    def get_loss(self, input, recon, posterior):
-        rec_loss = nn.functional.mse_loss(input, recon)
-        # rec_loss = nn.functional.binary_cross_entropy_with_logits(recon, input)    
+    # def get_loss(self, input, recon, posterior):
+    #     rec_loss = nn.functional.mse_loss(input, recon)
+    #     # rec_loss = nn.functional.binary_cross_entropy_with_logits(recon, input)    
 
-        kl_loss = -0.5 * (1 + posterior.logvar - posterior.mean ** 2 - posterior.var)
-        kl_loss = kl_loss.mean()
+    #     kl_loss = -0.5 * (1 + posterior.logvar - posterior.mean ** 2 - posterior.var)
+    #     kl_loss = kl_loss.mean()
 
-        return {
-            "rec_loss": rec_loss,
-            "kl_loss": kl_loss,
-            "loss": rec_loss + 1e-4 * kl_loss,
-        }
+    #     return {
+    #         "rec_loss": rec_loss,
+    #         "kl_loss": kl_loss,
+    #         "loss": rec_loss + 1e-4 * kl_loss,
+    #     }
 
     def training_step(self, batch, batch_idx):
         x = self.get_input(batch, self.image_key)
@@ -112,23 +112,23 @@ class AutoEncoderKL(BaseModel):
 
         opt_g, opt_d = self.optimizers()
         # train autoencoder
-        self.toggle_optimizer(opt_g)
+        # self.toggle_optimizer(opt_g)
         aeloss, log_dict_ae = self.loss_fn(x, dec, posterior, 0, self.global_step,
                                             last_layer=self.get_last_layer(), split="train")
+        opt_g.zero_grad()
         self.manual_backward(aeloss)
         opt_g.step()
-        opt_g.zero_grad()
-        self.untoggle_optimizer(opt_g)
+        # self.untoggle_optimizer(opt_g)
         self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False)
 
         # train discriminator
-        self.toggle_optimizer(opt_d)
+        # self.toggle_optimizer(opt_d)
         discloss, log_dict_disc = self.loss_fn(x, dec, posterior, 1, self.global_step,
                                                 last_layer=self.get_last_layer(), split="train")
+        opt_d.zero_grad()
         self.manual_backward(discloss)
         opt_d.step()
-        opt_d.zero_grad()
-        self.untoggle_optimizer(opt_d)
+        # self.untoggle_optimizer(opt_d)
         self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False)
     
     def validation_step(self, batch, batch_idx):
@@ -159,7 +159,7 @@ class AutoEncoderKL(BaseModel):
         return log
 
     def configure_optimizers(self):
-        lr = 6e-6
+        lr = 4.5e-6
         opt_ae = torch.optim.Adam(list(self.encoder.parameters())+
                                   list(self.decoder.parameters())+
                                   list(self.quant_conv.parameters())+
