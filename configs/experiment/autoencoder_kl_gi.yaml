@@ -1,0 +1,34 @@
+# @package _global_
+
+defaults:
+  - override /datamodule: genshin_impact.yaml
+  - override /model: autoencoder/autoencoder_kl_d8_z4.yaml
+  - override /callbacks: default.yaml
+  - override /trainer: gpu.yaml
+  - override /logger: wandb.yaml
+
+# all parameters below will be merged with parameters from default configurations set above
+# this allows you to overwrite only specified parameters
+
+seed: 188
+
+trainer:
+  max_epochs: 200
+  precision: 16-mixed
+
+datamodule:
+  batch_size: 8
+
+logger:
+  wandb:
+    project: "waiffusion"
+    tags: ${tags}
+    group: "autoencoder"
+
+callbacks:
+  model_checkpoint:
+    monitor: "val/rec_loss"
+    mode: "min"
+
+train: true
+test: false

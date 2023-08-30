@@ -1,0 +1,31 @@
+_target_: src.models.autoencoder.AutoEncoderKL
+
+in_channels: 3
+out_channels: 3
+hidden_channels: [128, 256, 512]
+latent_channels: 4
+num_res_blocks: 2
+attention_levels: []
+dropout: 0.1
+image_key: image
+
+# optimizer:
+#   _target_: torch.optim.AdamW
+#   _partial_: True
+#   lr: 2e-4
+#   weight_decay: 0.0001
+
+# scheduler_config:
+#   scheduler:
+#     _target_: torch.optim.lr_scheduler.OneCycleLR
+#     _partial_: True
+#     max_lr: 2e-4
+#     total_steps: ${trainer.max_epochs}
+#   interval: epoch
+
+loss_fn:
+  _target_: src.losses.lpips.LPIPSWithDiscriminator
+  disc_start: 20001
+  kl_weight: 0.000001
+  disc_weight: 0.5
+  perceptual_weight: 0.25
