@@ -1,0 +1,38 @@
+# @package _global_
+
+defaults:
+  - override /datamodule: genshin_impact.yaml
+  - override /model: diffusion/text2img_ldm_i256_z32.yaml
+  - override /callbacks: default.yaml
+  - override /trainer: gpu.yaml
+  - override /logger: wandb.yaml
+
+# all parameters below will be merged with parameters from default configurations set above
+# this allows you to overwrite only specified parameters
+
+seed: 188
+
+model:
+  vae_pretrained_path: ${paths.log_dir}/train/runs/2023-08-28_01-29-27/checkpoints/last.ckpt
+
+trainer:
+  max_epochs: 200
+  precision: 16-mixed
+  val_check_interval: 5
+
+datamodule:
+  batch_size: 64
+
+logger:
+  wandb:
+    project: "waiffusion"
+    tags: ${tags}
+    group: "text2img"
+
+callbacks:
+  model_checkpoint:
+    monitor: "val/loss"
+    mode: "min"
+
+train: true
+test: false
