@@ -5,7 +5,7 @@ import torch
 from torch import nn
 
 from src.models.common import Normalize, Upsample, Downsample
-from src.models.attention import AttentionType, AttentionBlock
+from src.models.attention import AttentionType, SelfAttentionBlock
 from src.models.unet.unet_blocks import ResBlock
 
 
@@ -244,7 +244,7 @@ class DownBlock(nn.Module):
             self.attention_blocks = nn.ModuleList()
             for i in range(num_res_blocks):
                 self.attention_blocks.append(
-                    AttentionBlock(
+                    SelfAttentionBlock(
                         out_channels,
                         attn_type=attn_type,
                         num_attn_heads=num_attn_heads,
@@ -308,7 +308,7 @@ class UpBlock(nn.Module):
             self.attention_blocks = nn.ModuleList()
             for i in range(num_res_blocks):
                 self.attention_blocks.append(
-                    AttentionBlock(
+                    SelfAttentionBlock(
                         out_channels,
                         attn_type=attn_type,
                         num_attn_heads=num_attn_heads,
@@ -381,7 +381,7 @@ class MidBlock(nn.Module):
         for _ in range(num_layers):
             if add_attention:
                 self.attention_blocks.append(
-                    AttentionBlock(
+                    SelfAttentionBlock(
                         in_channels,
                         attn_type=attn_type,
                         num_attn_heads=num_attn_heads,

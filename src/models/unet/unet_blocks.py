@@ -4,7 +4,7 @@ from typing import List, Optional
 import torch
 from torch import nn
 
-from src.models.attention import AttentionBlock, AttentionType
+from src.models.attention import SelfAttentionBlock, SpatialTransformer, AttentionType
 from src.models.common import ConvND, Downsample, Normalize, Upsample
 from src.utils.module_utils import zero_module
 
@@ -38,48 +38,13 @@ class SinusoidalTimestepEmbedding(nn.Module):
         return embedding
 
 
-class TimestepBlock(nn.Module):
-    """The module takes timestep embedding as a second argument."""
-
-    @abstractmethod
-    def forward(self, x: torch.Tensor, embedding: Optional[torch.Tensor] = None):
-        pass
-
-
-def TimestepEmbedForwarder(
-    module: nn.Module,
-    x: torch.Tensor,
-    embedding: Optional[torch.Tensor] = None,
-    context: Optional[torch.Tensor] = None,
-):
-    """An utility function to forward a module with extra timestep embedding argument."""
-    if isinstance(module, TimestepBlock):
-        return module(x, embedding)
-    else:
-        return module(x)
-
-
-class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
-    """A sequential module that passes timestep embeddings to the children that support it as an
-    extra input."""
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        embedding: Optional[torch.Tensor],
-        context: Optional[torch.Tensor] = None,
-    ):
-        for module in self:
-            x = TimestepEmbedForwarder(module, x, embedding, context)
-        return x
-
-
-class DownBlock(TimestepBlock):
+class DownBlock(nn.Module):
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
         embedding_channels: Optional[int] = None,
+        context_dim: Optional[int] = None,
         dropout: float = 0.0,
         dim: int = 2,
         num_layers: int = 1,
@@ -90,8 +55,11 @@ class DownBlock(TimestepBlock):
         attn_type: AttentionType = "standard",
         num_attn_heads: int = 1,
         channels_per_head: int = -1,
+        use_spatial_transformer: bool = False
     ):
         super().__init__()
+
+        self.use_spatial_transformer = use_spatial_transformer
 
         self.res_blocks = nn.ModuleList()
         for i in range(num_layers):
@@ -112,11 +80,20 @@ class DownBlock(TimestepBlock):
             self.attention_blocks = nn.ModuleList()
             for i in range(num_layers):
                 self.attention_blocks.append(
-                    AttentionBlock(
+                    SelfAttentionBlock(
                         out_channels,
                         attn_type=attn_type,
                         num_attn_heads=num_attn_heads,
                         channels_per_head=channels_per_head,
+                    )
+                    if not use_spatial_transformer else
+                    SpatialTransformer(
+                        out_channels,
+                        context_dim=context_dim,
+                        num_attn_heads=num_attn_heads,
+                        dim_per_head=channels_per_head,
+                        attn_type=attn_type,
+                        dropout=dropout
                     )
                 )
         else:
@@ -127,14 +104,22 @@ class DownBlock(TimestepBlock):
         else:
             self.downsampler = None
 
-    def forward(self, x: torch.Tensor, embedding: torch.Tensor):
+    def forward(
+        self,
+        x: torch.Tensor,
+        embedding: Optional[torch.Tensor] = None,
+        context: Optional[torch.Tensor] = None
+    ):
         hidden_states = []
 
         for i, res_block in enumerate(self.res_blocks):
             x = res_block(x, embedding)
 
             if self.attention_blocks is not None:
-                x = self.attention_blocks[i](x)
+                if self.use_spatial_transformer:
+                    x = self.attention_blocks[i](x, context=context)
+                else:
+                    x = self.attention_blocks[i](x)
 
             hidden_states.append(x)
 
@@ -149,13 +134,14 @@ class DownBlock(TimestepBlock):
         return len(self.res_blocks)
 
 
-class UpBlock(TimestepBlock):
+class UpBlock(nn.Module):
     def __init__(
         self,
         in_channels: int,
         prev_out_channels: int,
         out_channels: int,
         embedding_channels: int,
+        context_dim: Optional[int] = None,
         dropout: float = 0.0,
         dim: int = 2,
         num_layers: int = 1,
@@ -166,8 +152,11 @@ class UpBlock(TimestepBlock):
         attn_type: AttentionType = "standard",
         num_attn_heads: int = 1,
         channels_per_head: int = -1,
+        use_spatial_transformer: bool = False
     ):
         super().__init__()
+
+        self.use_spatial_transformer = use_spatial_transformer
 
         self.res_blocks = nn.ModuleList()
         for i in range(num_layers):
@@ -189,11 +178,20 @@ class UpBlock(TimestepBlock):
             self.attention_blocks = nn.ModuleList()
             for i in range(num_layers):
                 self.attention_blocks.append(
-                    AttentionBlock(
+                    SelfAttentionBlock(
                         out_channels,
                         attn_type=attn_type,
                         num_attn_heads=num_attn_heads,
                         channels_per_head=channels_per_head,
+                    )
+                    if not use_spatial_transformer else
+                    SpatialTransformer(
+                        out_channels,
+                        context_dim=context_dim,
+                        num_attn_heads=num_attn_heads,
+                        dim_per_head=channels_per_head,
+                        attn_type=attn_type,
+                        dropout=dropout
                     )
                 )
         else:
@@ -204,14 +202,23 @@ class UpBlock(TimestepBlock):
         else:
             self.upsampler = None
 
-    def forward(self, x: torch.Tensor, hidden_states: List[torch.Tensor], embedding: torch.Tensor):
+    def forward(
+        self,
+        x: torch.Tensor,
+        hidden_states: List[torch.Tensor],
+        embedding: Optional[torch.Tensor] = None,
+        context: Optional[torch.Tensor] = None
+    ):
         for i, res_block in enumerate(self.res_blocks):
             hs = hidden_states.pop()
             x = torch.cat((x, hs), dim=1)
             x = res_block(x, embedding)
 
             if self.attention_blocks is not None:
-                x = self.attention_blocks[i](x)
+                if self.use_spatial_transformer:
+                    x = self.attention_blocks[i](x, context=context)
+                else:
+                    x = self.attention_blocks[i](x)
 
         if self.upsampler is not None:
             x = self.upsampler(x)
@@ -228,6 +235,7 @@ class MidBlock(nn.Module):
         self,
         in_channels: int,
         embedding_channels: Optional[int] = None,
+        context_dim: Optional[int] = None,
         dropout: float = 0.0,
         dim: int = 2,
         num_layers: int = 1,
@@ -236,8 +244,11 @@ class MidBlock(nn.Module):
         attn_type: AttentionType = "standard",
         num_attn_heads: int = 1,
         channels_per_head: int = -1,
+        use_spatial_transformer: bool = False
     ):
         super().__init__()
+
+        self.use_spatial_transformer = use_spatial_transformer
 
         self.res_blocks = nn.ModuleList([
             ResBlock(
@@ -267,11 +278,20 @@ class MidBlock(nn.Module):
         for _ in range(num_layers):
             if add_attention:
                 self.attention_blocks.append(
-                    AttentionBlock(
+                    SelfAttentionBlock(
                         in_channels,
                         attn_type=attn_type,
                         num_attn_heads=num_attn_heads,
                         channels_per_head=channels_per_head,
+                    )
+                    if not use_spatial_transformer else
+                    SpatialTransformer(
+                        in_channels,
+                        context_dim=context_dim,
+                        num_attn_heads=num_attn_heads,
+                        dim_per_head=channels_per_head,
+                        attn_type=attn_type,
+                        dropout=dropout
                     )
                 )
             else:
@@ -280,18 +300,26 @@ class MidBlock(nn.Module):
         if add_attention:
             self.attention_blocks = nn.ModuleList(self.attention_blocks)
 
-    def forward(self, x: torch.Tensor, embedding: Optional[torch.Tensor] = None):
+    def forward(
+        self,
+        x: torch.Tensor,
+        embedding: Optional[torch.Tensor] = None,
+        context: Optional[torch.Tensor] = None
+    ):
         x = self.res_blocks[0](x, embedding)
 
         for attn, res_block in zip(self.attention_blocks, self.res_blocks[1:]):
             if attn is not None:
-                x = attn(x)
+                if self.use_spatial_transformer:
+                    x = attn(x, context=context)
+                else:
+                    x = attn(x)
             x = res_block(x, embedding)
 
         return x
 
 
-class ResBlock(TimestepBlock):
+class ResBlock(nn.Module):
     def __init__(
         self,
         in_channels: int,

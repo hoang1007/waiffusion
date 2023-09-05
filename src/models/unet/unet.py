@@ -4,16 +4,14 @@ from typing import List, Optional, Tuple
 import torch
 from torch import nn
 
-from src.models.attention import AttentionBlock, AttentionType
+from src.models.attention import SelfAttentionBlock, AttentionType
 from src.models.common import ConvND, Normalize
 from src.utils.module_utils import zero_module
 
 from .unet_blocks import (
     DownBlock,
-    ResBlock,
     MidBlock,
     SinusoidalTimestepEmbedding,
-    TimestepEmbedSequential,
     UpBlock,
 )
 
@@ -27,11 +25,13 @@ class Unet(nn.Module):
         hidden_channels: List[int],
         num_res_blocks: int,
         attention_levels: Tuple[int],
+        context_dim: Optional[int] = None,
         attn_type: AttentionType = "standard",
         dropout: float = 0.0,
         dim: int = 2,
         num_attn_heads: int = 1,
         channels_per_head: int = -1,
+        use_spatial_transformer: bool = False,
         num_class_embeds: Optional[int] = None,
     ):
         super().__init__()
@@ -72,6 +72,7 @@ class Unet(nn.Module):
                     in_channels=in_channels,
                     out_channels=channels,
                     embedding_channels=time_embedding_dim,
+                    context_dim=context_dim,
                     dropout=dropout,
                     dim=dim,
                     num_layers=num_res_blocks,
@@ -80,6 +81,7 @@ class Unet(nn.Module):
                     attn_type=attn_type,
                     num_attn_heads=num_attn_heads,
                     channels_per_head=channels_per_head,
+                    use_spatial_transformer=use_spatial_transformer
                 )
             )
 
@@ -89,11 +91,13 @@ class Unet(nn.Module):
         self.mid_block = MidBlock(
             in_channels=last_hidden_channels,
             embedding_channels=time_embedding_dim,
+            context_dim=context_dim,
             dim=dim,
             num_layers=1,
             attn_type=attn_type,
             num_attn_heads=num_attn_heads,
             channels_per_head=channels_per_head,
+            use_spatial_transformer=use_spatial_transformer,
             dropout=dropout
         )
 
@@ -113,6 +117,7 @@ class Unet(nn.Module):
                     prev_out_channels=prev_out_channels,
                     out_channels=channels,
                     embedding_channels=time_embedding_dim,
+                    context_dim=context_dim,
                     dropout=dropout,
                     dim=dim,
                     num_layers=num_res_blocks + 1,
@@ -121,6 +126,7 @@ class Unet(nn.Module):
                     attn_type=attn_type,
                     num_attn_heads=num_attn_heads,
                     channels_per_head=channels_per_head,
+                    use_spatial_transformer=use_spatial_transformer
                 )
             )
 
@@ -154,16 +160,16 @@ class Unet(nn.Module):
 
         hidden_states = [x]
         for down_block in self.down_blocks:
-            x, hs = down_block(x, emb)
+            x, hs = down_block(x, emb, context=context)
             hidden_states.extend(hs)
 
-        x = self.mid_block(x, emb)
+        x = self.mid_block(x, emb, context=context)
 
         for up_block in self.up_blocks:
             hs = hidden_states[-up_block.num_layers :]
             hidden_states = hidden_states[: -up_block.num_layers]
 
-            x = up_block(x, hs, emb)
+            x = up_block(x, hs, emb, context=context)
 
         x = self.out_proj(x)
 

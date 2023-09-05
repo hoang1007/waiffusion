@@ -17,16 +17,22 @@ AttentionType = Literal["standard", "efficient", "flash"]
 class IAttention(nn.Module):
     @abstractmethod
     def forward(
-        self, qkv: torch.Tensor, key_padding_mask: Optional[torch.BoolTensor] = None
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        key_padding_mask: Optional[torch.BoolTensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
-            :param qkv: The tensor of query, key, value. Shape: (B, S, 3, H, D)
-            :param key_padding_mask: A bool tensor. `True` indices for a valid token. Shape: (B, S)
+            q (torch.Tensor): The tensor of query. Shape: (B, S, H, D)
+            k (torch.Tensor): The tensor of key. Shape: (B, S', H, D)
+            v (torch.Tensor): The tensor of value. Shape: (B, S', H, D)
+            key_padding_mask (torch.BoolTensor): A bool tensor. `True` indices for a valid token. Shape: (B, S)
 
         Returns:
-            :return output: The tensor of attention output. Shape: (B, S, H, D)
-            :return attn: The tensor of attention weights. Shape: (B, S, H, S)
+            (torch.Tensor) The tensor of attention output. Shape: (B, S, H, D)
+            (torch.Tensor) The tensor of attention weights. Shape: (B, S, H, S)
         """
         pass
 
@@ -37,8 +43,13 @@ class StandardAttention(IAttention):
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, qkv: torch.Tensor, key_padding_mask: Optional[torch.BoolTensor] = None):
-        q, k, v = torch.unbind(qkv, dim=2)
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        key_padding_mask: Optional[torch.BoolTensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         _, _, H, D = q.shape
 
         q = rearrange(q, "B T H D -> (B H) T D")
@@ -49,10 +60,10 @@ class StandardAttention(IAttention):
         logits = einsum(q * scale, k * scale, "B T D, B S D -> B T S")
 
         if key_padding_mask is not None:
-            logits = logits.masked_fill(~key_padding_mask, -1e9)
+            logits = logits.masked_fill(~key_padding_mask, -torch.finfo(logits.dtype))
 
-        # Numberical stability
-        logits = logits - logits.max(dim=-1, keepdim=True).values
+        # # Numberical stability
+        # logits = logits - logits.max(dim=-1, keepdim=True).values
 
         probs = F.softmax(logits, dim=-1)
         probs = self.dropout(probs)
@@ -68,10 +79,17 @@ class EfficientAttention(IAttention):
     def __init__(self, dropout: float = 0.0):
         super().__init__()
 
-    def forward(self, qkv: torch.Tensor, key_padding_mask: Optional[torch.BoolTensor] = None):
-        assert key_padding_mask is None, "key_padding_mask is not supported for EfficientAttention"
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        key_padding_mask: Optional[torch.BoolTensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        assert (
+            key_padding_mask is None
+        ), "key_padding_mask is not supported for EfficientAttention"
 
-        q, k, v = torch.unbind(qkv, dim=2)
         _, _, H, D = q.shape
 
         attn_vals = []
@@ -101,7 +119,14 @@ class FlashAttention(IAttention):
         except ImportError:
             raise ImportError("Please install flash_attn: pip install flash_attn")
 
-    def forward(self, qkv: torch.Tensor, key_padding_mask: Optional[torch.BoolTensor] = None):
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        key_padding_mask: Optional[torch.BoolTensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        qkv = torch.stack((q, k, v), dim=2)
         dtype = qkv.dtype
         return self.attn(qkv.type(torch.half), key_padding_mask).type(dtype)
 
@@ -117,7 +142,7 @@ def get_attention(attn_type: AttentionType, *args, **kwargs) -> IAttention:
         raise ValueError(f"Unknown attention type: {attn_type}")
 
 
-class AttentionBlock(nn.Module):
+class SelfAttentionBlock(nn.Module):
     def __init__(
         self,
         channels: int,
@@ -164,12 +189,196 @@ class AttentionBlock(nn.Module):
         x = x.reshape(b, c, -1)
         # (B, 3 * C, T)
         qkv = self.qkv(self.norm(x))
-        qkv = rearrange(qkv, "B (three H C) T -> B T three H C", three=3, H=self.num_attn_heads)
+        qkv = rearrange(
+            qkv, "B (three H C) T -> three B T H C", three=3, H=self.num_attn_heads
+        )
+        q, k, v = torch.unbind(qkv)
 
         # h.shape == (B, T, H, C // H)
-        h, attn_weights = self.attn(qkv)
+        h, attn_weights = self.attn(q, k, v)
         h = rearrange(h, "B T H C -> B (H C) T")
         h = self.proj_out(h)
 
         out = (h + x).reshape(b, c, *spatial)
         return out
+
+
+class CrossAttentionLayer(nn.Module):
+    def __init__(
+        self,
+        query_dim: int,
+        context_dim: Optional[int] = None,
+        num_attn_heads: int = 8,
+        dim_per_head: int = -1,
+        attn_core: AttentionType = "standard",
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+
+        if dim_per_head == -1:
+            dim_per_head == query_dim // num_attn_heads
+
+        hidden_dim = num_attn_heads * dim_per_head
+        if context_dim is None:
+            context_dim = query_dim
+        self.num_attn_heads = num_attn_heads
+
+        self.attn_core = get_attention(attn_core)
+
+        self.q_proj = nn.Linear(query_dim, hidden_dim, bias=False)
+        self.k_proj = nn.Linear(context_dim, hidden_dim, bias=False)
+        self.v_proj = nn.Linear(context_dim, hidden_dim, bias=False)
+
+        self.out_proj = nn.Sequential(
+            nn.Linear(hidden_dim, query_dim), nn.Dropout(p=dropout)
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        context: Optional[torch.Tensor] = None,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ):
+        if context is None:
+            context = x
+
+        q = self.q_proj(x)
+        k = self.k_proj(context)
+        v = self.v_proj(context)
+
+        q, k, v = map(
+            lambda t: rearrange("B S (H D) -> B S H D", H=self.num_attn_heads)
+        )
+        attn_out = self.attn_core(q, k, v, key_padding_mask)
+        out = self.out_proj(attn_out)
+        out = rearrange(out, "B S H D -> B S (H D)")
+
+        return out
+
+
+class GEGLU(nn.Module):
+    def __init__(self, dim_in, dim_out):
+        super().__init__()
+        self.proj = nn.Linear(dim_in, dim_out * 2)
+
+    def forward(self, x):
+        x, gate = self.proj(x).chunk(2, dim=-1)
+        return x * F.gelu(gate)
+
+
+class FeedForward(nn.Module):
+    def __init__(self, dim, dim_out=None, mult=4, glu=False, dropout=0.):
+        super().__init__()
+        inner_dim = int(dim * mult)
+        if dim_out is None:
+            dim_out = dim
+        project_in = nn.Sequential(
+            nn.Linear(dim, inner_dim),
+            nn.GELU()
+        ) if not glu else GEGLU(dim, inner_dim)
+
+        self.net = nn.Sequential(
+            project_in,
+            nn.Dropout(dropout),
+            nn.Linear(inner_dim, dim_out)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class BasicTransformerBlock(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        context_dim: Optional[int] = None,
+        num_attn_heads: int = 8,
+        dim_per_head: int = 64,
+        gated_feedforward: bool = True,
+        dropout: float = 0.0,
+        attn_type: AttentionType = "standard",
+    ):
+        self.attn1 = CrossAttentionLayer(
+            query_dim=input_dim,
+            num_attn_heads=num_attn_heads,
+            dim_per_head=dim_per_head,
+            attn_core=attn_type,
+            dropout=dropout
+        )
+        self.feedforward = FeedForward(input_dim, glu=gated_feedforward, dropout=dropout)
+        self.attn2 = CrossAttentionLayer(
+            query_dim=input_dim,
+            context_dim=context_dim, 
+            num_attn_heads=num_attn_heads,
+            dim_per_head=dim_per_head,
+            attn_core=attn_type,
+            dropout=dropout
+        )
+    
+        self.norm1 = nn.LayerNorm(input_dim)
+        self.norm2 = nn.LayerNorm(input_dim)
+        self.norm3 = nn.LayerNorm(input_dim)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        context: Optional[torch.Tensor] = None,
+        key_padding_mask: Optional[torch.Tensor] = None
+    ):
+        x = self.attn1(self.norm1(x), key_padding_mask=key_padding_mask) + x
+        x = self.attn2(self.norm2(x), context=context, key_padding_mask=key_padding_mask) + x
+        x = self.feedforward(self.norm3(x)) + x
+
+        return x
+
+
+class SpatialTransformer(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        context_dim: Optional[int] = None,
+        num_attn_heads: int = 8,
+        dim_per_head: int = -1,
+        num_layers: int = 1,
+        attn_type: AttentionType = "standard",
+        dropout: float = 0.0
+    ):
+        super().__init__()
+
+        if dim_per_head == -1:
+            dim_per_head = in_channels // num_attn_heads
+
+        self.in_channels = in_channels
+        hidden_dim = num_attn_heads * dim_per_head
+
+        self.norm = Normalize(in_channels)
+
+        self.proj_in = nn.Conv2d(in_channels, hidden_dim, kernel_size=1)
+
+        self.transformer_blocks = nn.ModuleList([
+            BasicTransformerBlock(
+                input_dim=hidden_dim,
+                context_dim=context_dim,
+                num_attn_heads=num_attn_heads,
+                dim_per_head=dim_per_head,
+                dropout=dropout,
+                attn_type=attn_type
+            ) for _ in range(num_layers)
+        ])
+
+        self.out_proj = zero_module(nn.Conv2d(hidden_dim, in_channels, kernel_size=1))
+    
+    def forward(self, x: torch.Tensor, context: Optional[torch.Tensor] = None):
+        h, w = x.shape[2:]
+
+        h = self.norm(x)
+        h = self.proj_in(h)
+        h = rearrange(h, 'B C H W -> B (H W) C')
+
+        for block in self.transformer_blocks:
+            h = block(h, context=context)
+        
+        h = rearrange(h, 'B (H W) C -> B C H W', H=h, W=w)
+        h = self.out_proj(h)
+
+        return h + x
