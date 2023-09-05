@@ -1,0 +1,3 @@
+_target_: src.models.condition_encoders.CLIPEncoder
+
+pretrained_name_or_path: openai/clip-vit-large-patch14
