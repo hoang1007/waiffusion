@@ -23,3 +23,4 @@ pytest          # tests
 # sh            # for running bash commands in some tests (linux/macos only)
 
 einops
+torch-ema
