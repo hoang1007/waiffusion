@@ -1,6 +1,6 @@
-from contextlib import contextmanager
+from warnings import warn
 from functools import partial
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Literal
 
 import numpy as np
 import torch
@@ -12,62 +12,55 @@ from torchvision.utils import make_grid
 from tqdm import tqdm
 
 from src.models.base import BaseModel
-from src.models.ema import EMA
 from src.models.samplers import BaseSampler
 from src.models.unet import Unet
-from src.utils.module_utils import load_ckpt
+from torch_ema import ExponentialMovingAverage
 
 
 class DDPM(BaseModel):
-    # classic DDPM with Gaussian diffusion, in image space
     def __init__(
         self,
         unet: Unet,
         sampler: BaseSampler,
         optimizer: Optional[partial] = None,
         scheduler_config: Optional[Dict] = None,
-        num_train_timesteps=1000,
-        loss_type="l2",
-        ckpt_path=None,
-        ignore_keys=[],
-        load_only_unet=False,
-        use_ema=True,
-        first_stage_key="image",
-        conditional_stage_key="class",
-        channels=3,
-        log_every_t=100,
-        parameterization="eps",  # all assuming fixed variance schedules
-        validation_mode="forward",  # forward: validate noise prediction, reverse: validate image generation or both
-        learn_logvar=False,
-        logvar_init=0.0,
+        num_train_timesteps: int = 1000,
+        first_stage_key: str = "image",
+        conditional_stage_key: str = "class",
+        parameterization: Literal['eps', 'x0'] = "eps",  # all assuming fixed variance schedules
+        validation_mode: Literal['forward', 'reverse', 'all'] = "forward",  # forward: validate noise prediction, reverse: validate image generation or both
+        learn_logvar: bool = False,
+        logvar_init: float = 0.0,
+        use_ema: bool = True,
+        compile_unet: bool = False
     ):
         super().__init__(optimizer, scheduler_config)
+
         assert parameterization in [
             "eps",
             "x0",
         ], 'currently only supporting "eps" and "x0"'
         self.parameterization = parameterization
         print(f"{self.__class__.__name__}: Running in {self.parameterization}-prediction mode")
-        self.cond_stage_model = None
-        self.log_every_t = log_every_t
         self.first_stage_key = first_stage_key
         self.conditional_stage_key = conditional_stage_key
-        self.channels = channels
         self.num_train_timesteps = num_train_timesteps
         self.unet = unet
         self.sampler = sampler
 
         self.use_ema = use_ema
         if self.use_ema:
-            self.model_ema = EMA(self.unet)
-            print(f"Keeping EMAs of {len(list(self.model_ema.buffers()))}.")
+            self.ema = ExponentialMovingAverage(self.unet.parameters(), decay=0.999)
+        
+        self.compile_unet = compile_unet
+        if self.compile_unet:
+            try:
+                self.unet = torch.compile(self.unet, mode='reduce-overhead', fullgraph=True)
+            except Exception as e:
+                warn(f'Cannot compile {self.unet.__class__.__name__} model. Got error: {e}')
 
-        if ckpt_path is not None:
-            self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys, only_model=load_only_unet)
-
-        self.loss_type = loss_type
         self.validation_mode = validation_mode
-        if self.validation_mode in ("reverse", "both"):
+        if self.validation_mode in ("reverse", "all"):
             self.inception_score = InceptionScore(normalize=True)
             self.fid = FrechetInceptionDistance(feature=192, normalize=True)
 
@@ -76,51 +69,19 @@ class DDPM(BaseModel):
         if self.learn_logvar:
             self.logvar = nn.Parameter(self.logvar, requires_grad=True)
 
-    @contextmanager
-    def ema_scope(self, context=None):
-        if self.use_ema:
-            self.model_ema.store(self.unet.parameters())
-            self.model_ema.copy_to(self.unet)
-            if context is not None:
-                print(f"{context}: Switched to EMA weights")
-        try:
-            yield None
-        finally:
-            if self.use_ema:
-                self.model_ema.restore(self.unet.parameters())
-                if context is not None:
-                    print(f"{context}: Restored training weights")
-
-    def init_from_ckpt(self, path, ignore_keys=list(), only_model=False):
-        sd = load_ckpt(path, map_location="cpu")
-        if "state_dict" in list(sd.keys()):
-            sd = sd["state_dict"]
-        keys = list(sd.keys())
-        for k in keys:
-            for ik in ignore_keys:
-                if k.startswith(ik):
-                    print(f"Deleting key {k} from state_dict.")
-                    del sd[k]
-        missing, unexpected = (
-            self.load_state_dict(sd, strict=False)
-            if not only_model
-            else self.unet.load_state_dict(sd, strict=False)
-        )
-        print(
-            f"Restored from {path} with {len(missing)} missing and {len(unexpected)} unexpected keys"
-        )
-        if len(missing) > 0:
-            print(f"Missing Keys: {missing}")
-        if len(unexpected) > 0:
-            print(f"Unexpected Keys: {unexpected}")
-
     @torch.no_grad()
     def sample(
         self,
         batch_size: int,
         classes: Optional[List[int]] = None,
         return_intermediates: bool = False,
+        n_intermediates: int = 5
     ):
+        save_steps = len(self.sampler.timesteps) // n_intermediates
+        if save_steps == 0:
+            warn(f'Number of intermediate images is set too large!. Got {n_intermediates} / {(len(self.sampler.timesteps))}')
+            save_steps = 1
+
         if classes is not None:
             assert len(classes) == batch_size, "Number of classes must match batch size"
             class_labels = torch.tensor(classes, device=self.device).long()
@@ -138,7 +99,7 @@ class DDPM(BaseModel):
             model_output = self.unet(imgs, t, class_labels=class_labels)
             imgs = self.sampler.reverse_step(model_output, t, imgs)
 
-            if i % self.log_every_t == 0 or i == len(self.sampler.timesteps) - 1:
+            if i % save_steps == 0 or i == len(self.sampler.timesteps) - 1:
                 intermediates.append(imgs)
 
         if return_intermediates:
@@ -146,24 +107,17 @@ class DDPM(BaseModel):
         return imgs
 
     def get_loss(self, pred, target, mean=True):
-        if self.loss_type == "l1":
-            loss = (target - pred).abs()
-            if mean:
-                loss = loss.mean()
-        elif self.loss_type == "l2":
-            if mean:
-                loss = torch.nn.functional.mse_loss(target, pred)
-            else:
-                loss = torch.nn.functional.mse_loss(target, pred, reduction="none")
+        if mean:
+            loss = torch.nn.functional.mse_loss(target, pred)
         else:
-            raise NotImplementedError("unknown loss type '{loss_type}'")
+            loss = torch.nn.functional.mse_loss(target, pred, reduction="none")
 
         return loss
 
     def forward(self, x, class_labels=None, context=None):
         # b, c, h, w, device, img_size, = *x.shape, x.device, self.image_size
         # assert h == img_size and w == img_size, f'height and width of image must be {img_size}'
-        t = torch.randint(0, self.num_train_timesteps, (x.shape[0],), device=self.device).long()
+        t = torch.randint(0, self.num_train_timesteps, (x.size(0),), device=self.device).long()
         noise = torch.randn_like(x)
         x_noisy = self.sampler.step(sample=x, t=t, noise=noise)
         model_out = self.unet(x_noisy, t, class_labels=class_labels, context=context)
@@ -221,7 +175,7 @@ class DDPM(BaseModel):
             self._forward_validate(batch, batch_idx)
         elif self.validation_mode == "reverse":
             self._reverse_validate(batch, batch_idx)
-        elif self.validation_mode == "both":
+        elif self.validation_mode == "all":
             self._forward_validate(batch, batch_idx)
             self._reverse_validate(batch, batch_idx)
         else:
@@ -231,7 +185,7 @@ class DDPM(BaseModel):
     def _forward_validate(self, batch, batch_idx):
         """Validate the diffusion forward process."""
         _, loss_dict_no_ema = self.shared_step(batch)
-        with self.ema_scope():
+        with self.ema.average_parameters():
             _, loss_dict_ema = self.shared_step(batch)
             loss_dict_ema = {key + "_ema": loss_dict_ema[key] for key in loss_dict_ema}
         self.log_dict(loss_dict_no_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
@@ -262,10 +216,9 @@ class DDPM(BaseModel):
             )
 
     def on_train_batch_end(self, *args, **kwargs):
-        if self.use_ema:
-            self.model_ema(self.unet)
+        self.ema.update()
 
-    def __get_rows_from_list(self, samples):
+    def _get_rows_from_list(self, samples):
         n_imgs_per_row = len(samples)
         denoise_grid = rearrange(samples, "n b c h w -> b n c h w")
         denoise_grid = rearrange(denoise_grid, "b n c h w -> (b n) c h w")
@@ -273,7 +226,7 @@ class DDPM(BaseModel):
         return denoise_grid
 
     @torch.no_grad()
-    def log_images(self, batch, N=8, n_row=2, sample=True, return_keys=None, **kwargs):
+    def log_images(self, batch, N=8, n_row=2, sample=True, return_keys=None, n_intermediates=5, **kwargs):
         log = dict()
         x = self.get_input(batch, self.first_stage_key)
         class_labels = batch.get(self.conditional_stage_key, None)
@@ -282,30 +235,34 @@ class DDPM(BaseModel):
         n_row = min(x.shape[0], n_row)
         x = x.to(self.device)[:N]
         log["inputs"] = x
+        log_steps = max(self.sampler.num_inference_timesteps // n_intermediates, 1)
 
         # get diffusion row
         diffusion_row = list()
         x_start = x[:n_row]
 
         for i, t in enumerate(reversed(self.sampler.timesteps)):
-            if i % self.log_every_t == 0 or i == len(self.sampler.timesteps) - 1:
+            if i % log_steps == 0 or i == len(self.sampler.timesteps) - 1:
                 t = repeat(torch.tensor([t]), "1 -> b", b=n_row)
                 t = t.to(self.device).long()
                 noise = torch.randn_like(x_start)
                 x_noisy = self.sampler.step(sample=x_start, t=t, noise=noise)
                 diffusion_row.append(x_noisy)
 
-        log["diffusion_row"] = self.__get_rows_from_list(diffusion_row)
+        log["diffusion_row"] = self._get_rows_from_list(diffusion_row)
 
         if sample:
             # get denoise row
-            with self.ema_scope("Plotting"):
+            with self.ema.average_parameters():
                 samples, denoise_row = self.sample(
-                    batch_size=N, classes=class_labels, return_intermediates=True
+                    batch_size=N,
+                    classes=class_labels,
+                    return_intermediates=True,
+                    n_intermediates=n_intermediates
                 )
 
             log["samples"] = samples
-            log["denoise_row"] = self.__get_rows_from_list(denoise_row)
+            log["denoise_row"] = self._get_rows_from_list(denoise_row)
 
         if return_keys:
             if np.intersect1d(list(log.keys()), return_keys).shape[0] == 0:
