@@ -31,7 +31,7 @@ class CLIPEncoder(LightningModule):
             self.max_length = self.tokenizer.model_max_length
 
     def forward(self, prompts: List[str]):
-        for i in range(prompts):
+        for i in range(len(prompts)):
             prompts[i] = self._preprocessing_prompt(prompts[i])
 
         tokenized = self.tokenizer(

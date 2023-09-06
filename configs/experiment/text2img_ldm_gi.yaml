@@ -13,15 +13,17 @@ defaults:
 seed: 188
 
 model:
-  vae_pretrained_path: ${paths.log_dir}/train/runs/2023-08-28_01-29-27/checkpoints/last.ckpt
+  vae_pretrained_path: ${paths.log_dir}/train/runs/2023-08-30_16-58-19/checkpoints/epoch_054.ckpt
+  text_encoder:
+    pretrained_name_or_path: /work/hpc/iai/hoang/waiffusion/cache/kawai
 
 trainer:
   max_epochs: 200
   precision: 16-mixed
-  val_check_interval: 5
+  check_val_every_n_epoch: 2
 
 datamodule:
-  batch_size: 64
+  batch_size: 1
 
 logger:
   wandb:

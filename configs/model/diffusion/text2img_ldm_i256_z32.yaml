@@ -1,4 +1,4 @@
-_target_: src.models.diffusion.LDM
+_target_: src.models.diffusion.Text2ImgLDM
 # _partial_: True
 
 defaults:
@@ -7,13 +7,17 @@ defaults:
   - text_encoder: ../condition_encoder/clip.yaml
   - _self_
 
+vae_scale_factor: 0.18215
 num_train_timesteps: 1000
 first_stage_key: image
 conditional_stage_key: prompt
 log_every_t: 10
 
 sampler:
-  beta_schedule: cosine
+  beta_schedule: linear
+  beta_start: 0.00085
+  beta_end: 0.0120
+  clip_denoised: false
 
 unet:
   _target_: src.models.unet.Unet

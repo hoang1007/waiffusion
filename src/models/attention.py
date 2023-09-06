@@ -247,11 +247,12 @@ class CrossAttentionLayer(nn.Module):
         v = self.v_proj(context)
 
         q, k, v = map(
-            lambda t: rearrange("B S (H D) -> B S H D", H=self.num_attn_heads)
+            lambda t: rearrange(t, "B S (H D) -> B S H D", H=self.num_attn_heads),
+            (q, k, v)
         )
-        attn_out = self.attn_core(q, k, v, key_padding_mask)
+        attn_out, attn_weights = self.attn_core(q, k, v, key_padding_mask)
+        attn_out = rearrange(attn_out, "B S H D -> B S (H D)")
         out = self.out_proj(attn_out)
-        out = rearrange(out, "B S H D -> B S (H D)")
 
         return out
 
@@ -298,6 +299,8 @@ class BasicTransformerBlock(nn.Module):
         dropout: float = 0.0,
         attn_type: AttentionType = "standard",
     ):
+        super().__init__()
+
         self.attn1 = CrossAttentionLayer(
             query_dim=input_dim,
             num_attn_heads=num_attn_heads,
@@ -369,7 +372,7 @@ class SpatialTransformer(nn.Module):
         self.out_proj = zero_module(nn.Conv2d(hidden_dim, in_channels, kernel_size=1))
     
     def forward(self, x: torch.Tensor, context: Optional[torch.Tensor] = None):
-        h, w = x.shape[2:]
+        H, W = x.shape[2:]
 
         h = self.norm(x)
         h = self.proj_in(h)
@@ -378,7 +381,7 @@ class SpatialTransformer(nn.Module):
         for block in self.transformer_blocks:
             h = block(h, context=context)
         
-        h = rearrange(h, 'B (H W) C -> B C H W', H=h, W=w)
+        h = rearrange(h, 'B (H W) C -> B C H W', H=H, W=W)
         h = self.out_proj(h)
 
         return h + x

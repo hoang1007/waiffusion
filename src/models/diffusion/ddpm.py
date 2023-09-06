@@ -265,7 +265,7 @@ class DDPM(BaseModel):
         if self.use_ema:
             self.model_ema(self.unet)
 
-    def __get_rows_from_list(self, samples):
+    def _get_rows_from_list(self, samples):
         n_imgs_per_row = len(samples)
         denoise_grid = rearrange(samples, "n b c h w -> b n c h w")
         denoise_grid = rearrange(denoise_grid, "b n c h w -> (b n) c h w")
@@ -295,7 +295,7 @@ class DDPM(BaseModel):
                 x_noisy = self.sampler.step(sample=x_start, t=t, noise=noise)
                 diffusion_row.append(x_noisy)
 
-        log["diffusion_row"] = self.__get_rows_from_list(diffusion_row)
+        log["diffusion_row"] = self._get_rows_from_list(diffusion_row)
 
         if sample:
             # get denoise row
@@ -305,7 +305,7 @@ class DDPM(BaseModel):
                 )
 
             log["samples"] = samples
-            log["denoise_row"] = self.__get_rows_from_list(denoise_row)
+            log["denoise_row"] = self._get_rows_from_list(denoise_row)
 
         if return_keys:
             if np.intersect1d(list(log.keys()), return_keys).shape[0] == 0:

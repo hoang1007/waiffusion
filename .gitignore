@@ -151,5 +151,8 @@ logs/
 .env
 .autoenv
 
+# Cache
+cache/
+
 # Checkpoints
 *.ckpt
