@@ -1,0 +1,9 @@
+_target_: src.datamodules.DataModule
+
+defaults:
+  - dataset: cifar10
+
+batch_size: 128
+train_ratio: 0.75
+num_workers: 8
+pin_memory: False

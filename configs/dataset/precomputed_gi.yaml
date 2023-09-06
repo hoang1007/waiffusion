@@ -1,0 +1,9 @@
+_target_: src.datamodules.PrecomputedPromptingImageDataset
+
+defaults:
+  org_dataset: ./genshin_impact.yaml
+  vae: model/autoencoder/autoencoder_kl_d8_z4.yaml
+  text_encoder: model/condition_encoder/clip.yaml
+
+device: 'cuda'
+cache_dir: 'cache'
