@@ -1,6 +1,6 @@
 from abc import abstractmethod
 from math import sqrt
-from typing import Literal, Optional, Tuple
+from typing import Literal, Optional, Tuple, get_args
 
 import torch
 import torch.nn as nn
@@ -11,7 +11,19 @@ from src.utils.module_utils import zero_module
 
 from .common import ConvND, Normalize
 
-AttentionType = Literal["standard", "efficient", "flash"]
+try:
+    from flash_attn.flash_attention import FlashAttention as _FlashAttention
+    flash_attn_available = True
+except ImportError:
+    flash_attn_available = False
+
+try:
+    from xformers.components.attention.core import scaled_dot_product_attention
+    xformers_available = True
+except ImportError:
+    xformers_available = False
+
+AttentionType = Literal["standard", "efficient", "flash", "xformers"]
 
 
 class IAttention(nn.Module):
@@ -112,12 +124,8 @@ class FlashAttention(IAttention):
     def __init__(self, dropout: float = 0.0):
         super().__init__()
 
-        try:
-            from flash_attn.flash_attention import FlashAttention as _FlashAttention
-
-            self.attn = _FlashAttention(attention_dropout=dropout)
-        except ImportError:
-            raise ImportError("Please install flash_attn: pip install flash_attn")
+        assert flash_attn_available, "To use `FlashAttention` please install flash_attn module. Command `pip install flash_attn`"
+        self.attn = _FlashAttention(attention_dropout=dropout)
 
     def forward(
         self,
@@ -131,6 +139,23 @@ class FlashAttention(IAttention):
         return self.attn(qkv.type(torch.half), key_padding_mask).type(dtype)
 
 
+class XformersAttention(IAttention):
+    def __init__(self, dropout: float = 0.0):
+        super().__init__()
+        assert xformers_available, "To use `XformersAttention please install xformers. Command `pip install xformers`"
+        self.dropout = nn.Dropout(p=dropout)
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        key_padding_mask: Optional[torch.BoolTensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        attn_vals = scaled_dot_product_attention(q, k, v, key_padding_mask, self.dropout)
+        return attn_vals
+
+
 def get_attention(attn_type: AttentionType, *args, **kwargs) -> IAttention:
     if attn_type == "standard":
         return StandardAttention(*args, **kwargs)
@@ -138,8 +163,11 @@ def get_attention(attn_type: AttentionType, *args, **kwargs) -> IAttention:
         return EfficientAttention(*args, **kwargs)
     elif attn_type == "flash":
         return FlashAttention(*args, **kwargs)
+    elif attn_type == "xformers":
+        return XformersAttention(*args, **kwargs)
     else:
-        raise ValueError(f"Unknown attention type: {attn_type}")
+        raise ValueError(
+            f"Unsupported attention type: {attn_type}. Supported attention types are {get_args(AttentionType)}")
 
 
 class SelfAttentionBlock(nn.Module):
@@ -247,11 +275,12 @@ class CrossAttentionLayer(nn.Module):
         v = self.v_proj(context)
 
         q, k, v = map(
-            lambda t: rearrange("B S (H D) -> B S H D", H=self.num_attn_heads)
+            lambda t: rearrange(t, "B S (H D) -> B S H D", H=self.num_attn_heads),
+            (q, k, v)
         )
-        attn_out = self.attn_core(q, k, v, key_padding_mask)
+        attn_out, attn_weights = self.attn_core(q, k, v, key_padding_mask)
+        attn_out = rearrange(attn_out, "B S H D -> B S (H D)")
         out = self.out_proj(attn_out)
-        out = rearrange(out, "B S H D -> B S (H D)")
 
         return out
 
@@ -298,6 +327,8 @@ class BasicTransformerBlock(nn.Module):
         dropout: float = 0.0,
         attn_type: AttentionType = "standard",
     ):
+        super().__init__()
+
         self.attn1 = CrossAttentionLayer(
             query_dim=input_dim,
             num_attn_heads=num_attn_heads,
@@ -369,7 +400,7 @@ class SpatialTransformer(nn.Module):
         self.out_proj = zero_module(nn.Conv2d(hidden_dim, in_channels, kernel_size=1))
     
     def forward(self, x: torch.Tensor, context: Optional[torch.Tensor] = None):
-        h, w = x.shape[2:]
+        H, W = x.shape[2:]
 
         h = self.norm(x)
         h = self.proj_in(h)
@@ -378,7 +409,7 @@ class SpatialTransformer(nn.Module):
         for block in self.transformer_blocks:
             h = block(h, context=context)
         
-        h = rearrange(h, 'B (H W) C -> B C H W', H=h, W=w)
+        h = rearrange(h, 'B (H W) C -> B C H W', H=H, W=W)
         h = self.out_proj(h)
 
         return h + x
